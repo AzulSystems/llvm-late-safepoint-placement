@@ -412,6 +412,35 @@ unsigned Function::lookupIntrinsicID() const {
   return 0;
 }
 
+std::string getTypeMunge(Type* Ty) {
+  std::string Result;
+  if (PointerType* PTyp = dyn_cast<PointerType>(Ty) ) {
+    Result += "p" + llvm::utostr(PTyp->getAddressSpace()) +
+      getTypeMunge(PTyp->getElementType());
+  } else if( ArrayType* ATyp = dyn_cast<ArrayType>(Ty) ) {
+    Result += "a" + llvm::utostr(ATyp->getNumElements()) +
+      getTypeMunge(ATyp->getElementType());
+  } else if( StructType* STyp = dyn_cast<StructType>(Ty) ) {
+    if( !STyp->isLiteral() ) {
+      Result += STyp->getName();
+    } else {
+      llvm_unreachable("TODO: implement literal types");
+    }
+  } else if( FunctionType* FT = dyn_cast<FunctionType>(Ty) ) {
+    Result += "f_" + getTypeMunge(FT->getReturnType());
+    for(size_t i = 0; i < FT->getNumParams(); i++) {
+      Result += getTypeMunge(FT->getParamType(i));
+    }
+    if( FT->isVarArg() ) {
+      Result += "vararg";
+    }
+    Result += "f"; //ensure distinguishable
+  } else if (Ty) {
+    Result += EVT::getEVT(Ty).getEVTString();
+  }
+  return Result;
+}
+
 std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
   assert(id < num_intrinsics && "Invalid intrinsic ID!");
   static const char * const Table[] = {
@@ -424,12 +453,7 @@ std::string Intrinsic::getName(ID id, ArrayRef<Type*> Tys) {
     return Table[id];
   std::string Result(Table[id]);
   for (unsigned i = 0; i < Tys.size(); ++i) {
-    if (PointerType* PTyp = dyn_cast<PointerType>(Tys[i])) {
-      Result += ".p" + llvm::utostr(PTyp->getAddressSpace()) +
-                EVT::getEVT(PTyp->getElementType()).getEVTString();
-    }
-    else if (Tys[i])
-      Result += "." + EVT::getEVT(Tys[i]).getEVTString();
+    Result += "." + getTypeMunge(Tys[i]);
   }
   return Result;
 }
@@ -623,16 +647,23 @@ void Intrinsic::getIntrinsicInfoTableEntries(ID id,
     DecodeIITType(NextElt, IITEntries, T);
 }
 
+static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
+                             ArrayRef<Type*> Tys, LLVMContext &Context);
 
 static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
-                             ArrayRef<Type*> Tys, LLVMContext &Context) {
+                             ArrayRef<Type*> Tys, LLVMContext &Context,
+                             bool& isVarArg) {
   using namespace Intrinsic;
   IITDescriptor D = Infos.front();
   Infos = Infos.slice(1);
 
+  isVarArg = false;
+
   switch (D.Kind) {
   case IITDescriptor::Void: return Type::getVoidTy(Context);
-  case IITDescriptor::VarArg: return Type::getVoidTy(Context);
+  case IITDescriptor::VarArg:
+    isVarArg = true;
+    return NULL;
   case IITDescriptor::MMX: return Type::getX86_MMXTy(Context);
   case IITDescriptor::Metadata: return Type::getMetadataTy(Context);
   case IITDescriptor::Half: return Type::getHalfTy(Context);
@@ -667,6 +698,15 @@ static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
   llvm_unreachable("unhandled");
 }
 
+// This is called from places where a training vararg is not legal
+static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
+                             ArrayRef<Type*> Tys, LLVMContext &Context) {
+  bool isVarArg = false;
+  Type* Ty = DecodeFixedType(Infos, Tys, Context, isVarArg);
+  assert( !isVarArg && "vararg in internal position?");
+  return Ty;
+}
+
 
 
 FunctionType *Intrinsic::getType(LLVMContext &Context,
@@ -678,10 +718,20 @@ FunctionType *Intrinsic::getType(LLVMContext &Context,
   Type *ResultTy = DecodeFixedType(TableRef, Tys, Context);
 
   SmallVector<Type*, 8> ArgTys;
-  while (!TableRef.empty())
-    ArgTys.push_back(DecodeFixedType(TableRef, Tys, Context));
-
-  return FunctionType::get(ResultTy, ArgTys, false);
+  bool isVarArg = false;
+  while (!TableRef.empty()) {
+    Type* Ty = DecodeFixedType(TableRef, Tys, Context, isVarArg);
+    if( Ty ) {
+      ArgTys.push_back(Ty);
+    } else if( isVarArg ) {
+      assert( TableRef.empty() && "var arg must be last" );
+      break;
+    } else {
+      llvm_unreachable("Type must be non-null unless isVarArg");
+    }
+  }
+  
+  return FunctionType::get(ResultTy, ArgTys, isVarArg);
 }
 
 bool Intrinsic::isOverloaded(ID id) {

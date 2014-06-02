@@ -267,6 +267,12 @@ void initializeLoopVectorizePass(PassRegistry&);
 void initializeSLPVectorizerPass(PassRegistry&);
 void initializeBBVectorizePass(PassRegistry&);
 void initializeMachineFunctionPrinterPassPass(PassRegistry&);
+void initializePlaceBackedgeSafepointsPass(PassRegistry&);
+void initializePlaceEntrySafepointsPass(PassRegistry&);
+void initializePlaceCallSafepointsPass(PassRegistry&);
+void initializeSafepointIRVerifierPass(PassRegistry&);
+void initializeRemoveFakeVMStateCallsPass(PassRegistry&);
+void initializeRemoveRedundantVMStatesPass(PassRegistry&);
 void initializeStackMapLivenessPass(PassRegistry&);
 }
 

@@ -143,7 +143,6 @@ namespace CallingConv {
     /// Differs from the C calling convention only in that the order of the
     /// first parameter and the sret parameter are swapped.
     X86_CDeclMethod = 80
-
   };
 } // End CallingConv namespace
 

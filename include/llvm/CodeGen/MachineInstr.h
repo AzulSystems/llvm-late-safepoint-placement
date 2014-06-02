@@ -86,7 +86,10 @@ private:
                                         // anything other than to convey comment
                                         // information to AsmPrinter.
 
-  uint8_t NumMemRefs;                   // Information on memory references.
+  // BEGIN CHANGE: NumMemRefs was a uint8_t, which is too
+  // small to hold the number of gc ptrs in some statepoints.
+  uint16_t NumMemRefs;                  // Information on memory references.
+  // END CHANGE
   mmo_iterator MemRefs;
 
   DebugLoc debugLoc;                    // Source line information.
@@ -1032,7 +1035,11 @@ public:
   /// list. This does not transfer ownership.
   void setMemRefs(mmo_iterator NewMemRefs, mmo_iterator NewMemRefsEnd) {
     MemRefs = NewMemRefs;
-    NumMemRefs = uint8_t(NewMemRefsEnd - NewMemRefs);
+    // BEGIN CHANGE: this was a cast to uint8_t, and has
+    // changed in sync with the above change to NumMemRefs from a
+    // uint8_t to a uint16_t.
+    NumMemRefs = uint16_t(NewMemRefsEnd - NewMemRefs);
+    // END CHANGE
     assert(NumMemRefs == NewMemRefsEnd - NewMemRefs && "Too many memrefs");
   }
 

@@ -74,6 +74,12 @@ public:
     return ClientMM->finalizeMemory(ErrMsg);
   }
 
+  virtual void *getPointerToNamedFunction(const std::string &Name,
+                                          bool AbortOnFailure = true) {
+    return ClientMM->getPointerToNamedFunction(Name, AbortOnFailure);
+  }
+
+
 private:
   MCJIT *ParentEngine;
   OwningPtr<RTDyldMemoryManager> ClientMM;

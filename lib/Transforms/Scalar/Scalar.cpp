@@ -65,6 +65,11 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeStructurizeCFGPass(Registry);
   initializeSinkingPass(Registry);
   initializeTailCallElimPass(Registry);
+  initializePlaceBackedgeSafepointsPass(Registry);
+  initializePlaceCallSafepointsPass(Registry);
+  initializePlaceEntrySafepointsPass(Registry);
+  initializeRemoveFakeVMStateCallsPass(Registry);
+  initializeRemoveRedundantVMStatesPass(Registry);
 }
 
 void LLVMInitializeScalarOpts(LLVMPassRegistryRef R) {

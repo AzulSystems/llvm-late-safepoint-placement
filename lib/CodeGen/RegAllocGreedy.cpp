@@ -313,7 +313,11 @@ private:
   unsigned tryInstructionSplit(LiveInterval&, AllocationOrder&,
                                SmallVectorImpl<unsigned>&);
   unsigned tryLocalSplit(LiveInterval&, AllocationOrder&,
-    SmallVectorImpl<unsigned>&);
+                         SmallVectorImpl<unsigned>&);
+
+  bool tryStatepointSplit(LiveInterval &VirtReg, AllocationOrder &Order,
+                              SmallVectorImpl<unsigned> &NewVRegs);
+  
   unsigned trySplit(LiveInterval&, AllocationOrder&,
                     SmallVectorImpl<unsigned>&);
   unsigned tryLastChanceRecoloring(LiveInterval &, AllocationOrder &,
@@ -1791,6 +1795,58 @@ unsigned RAGreedy::tryLocalSplit(LiveInterval &VirtReg, AllocationOrder &Order,
   return 0;
 }
 
+/// If this live region contains STATEPOINT nodes, unconditionally split around
+/// them. This enables the statepoint use/def to be assigned independently of
+/// following uses.  This doesn't prevent the create of reloads between the
+/// call and the safepoint, but it does enable us to fold them without tripping
+/// over the single use criteria.
+/// Returns true if performs any splits
+bool
+RAGreedy::tryStatepointSplit(LiveInterval &VirtReg, AllocationOrder &Order,
+                             SmallVectorImpl<unsigned> &NewVRegs) {
+  // Note: This code is heavily modelled after tryInstructionSplit.  Changes
+  // from there should probably be propagated here.
+  const TargetRegisterClass *CurRC = MRI->getRegClass(VirtReg.reg);
+
+  // Always enable split spill mode, since we're effectively spilling to a
+  // register.
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this);
+  SE->reset(LREdit, SplitEditor::SM_Size);
+
+  ArrayRef<SlotIndex> Uses = SA->getUseSlots();
+  if (Uses.size() <= 1)
+    return false;
+
+  const TargetRegisterClass *SuperRC = TRI->getLargestLegalSuperClass(CurRC);
+  unsigned SuperRCNumAllocatableRegs = RCI.getNumAllocatableRegs(SuperRC);
+  // Split around each STATEPOINT instruction
+  for (unsigned i = 0; i != Uses.size(); ++i) {
+    if (const MachineInstr *MI = Indexes->getInstructionFromIndex(Uses[i])) {
+      if( MI->getOpcode() != TargetOpcode::STATEPOINT ) {
+        continue;
+      }
+      SE->openIntv();
+      SlotIndex SegStart = SE->enterIntvBefore(Uses[i]);
+      SlotIndex SegStop  = SE->leaveIntvAfter(Uses[i]);
+      SE->useIntv(SegStart, SegStop);
+    }
+  }
+
+  if (LREdit.empty()) {
+    // no updates performed
+    return false;
+  }
+
+  SmallVector<unsigned, 8> IntvMap;
+  SE->finish(&IntvMap);
+  DebugVars->splitRegister(VirtReg.reg, LREdit.regs(), *LIS);
+  ExtraRegInfo.resize(MRI->getNumVirtRegs());
+
+  // Assign all new registers to RS_Spill. This was the last chance.
+  setStage(LREdit.begin(), LREdit.end(), RS_Spill);
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 //                          Live Range Splitting
 //===----------------------------------------------------------------------===//
@@ -1804,6 +1860,23 @@ unsigned RAGreedy::trySplit(LiveInterval &VirtReg, AllocationOrder &Order,
   if (getStage(VirtReg) >= RS_Spill)
     return 0;
 
+  // Note: Disabling this for the moment.  I don't know of anything wrong with
+  // it, but with the combined safepoint-call mechanism, this is a lot less
+  // necessary.  As such, I'm disabling it "just in case".
+#if 0
+  // Perform a custom split for statepoint nodes to assist with reload folding
+  // into the statepoint itself.  In terms of optimization, this could probably
+  // be better integrated, but placing it here is correct and reasonable simple.
+  /* scope */ {
+    NamedRegionTimer T("Statepoint Splitting", TimerGroupName, TimePassesIsEnabled);
+    SA->analyze(&VirtReg);
+    if( tryStatepointSplit(VirtReg, Order, NewVRegs) ) {
+      // successfully split
+      return 0;
+    } // else fallthrough
+  }
+#endif
+  
   // Local intervals are handled separately.
   if (LIS->intervalIsInOneMBB(VirtReg)) {
     NamedRegionTimer T("Local Splitting", TimerGroupName, TimePassesIsEnabled);

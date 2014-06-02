@@ -382,6 +382,15 @@ FunctionPass *createSampleProfileLoaderPass(StringRef Name);
 //
 FunctionPass *createScalarizerPass();
 
+// Safepoint insertion
+Pass *createPlaceBackedgeSafepointsPass();
+FunctionPass *createPlaceCallSafepointsPass();
+FunctionPass *createPlaceEntrySafepointsPass();
+
+// VM state management
+FunctionPass *createRemoveFakeVMStateCallsPass();
+FunctionPass *createRemoveRedundantVMStatesPass();
+
 } // End llvm namespace
 
 #endif

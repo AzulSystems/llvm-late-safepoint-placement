@@ -114,6 +114,100 @@ public:
   /// get simple disambiguation between loads without worrying about alias
   /// analysis.
   SmallVector<SDValue, 8> PendingLoads;
+
+  // BEGIN CHANGE
+public:
+  // This class tracks both per-statepoint and per-selectiondag information.
+  // For each statepoint it tracks locations of it's gc valuess (incoming and relocated)
+  // and list of gcreloc calls scheduled for visiting (this used for consistency check only)
+  // For each basic block (or equivalently selectiondag) it tracks allocated stackslots.
+  class StatepointLoweringState {
+  public:
+    StatepointLoweringState(): NumSlotsAllocated(0) {}
+
+    void clear() {
+      StackSlots.clear();
+    }
+    void startNewStatepoint() {
+      // Consistency check
+      assert(PendingGCRelocateCalls.empty() &&
+             "Trying to visit statepoint before finished processing previous one");
+      Locations.clear();
+      RelocLocations.clear();
+      NumSlotsAllocated = 0;
+    }
+
+    // Store locations of values incoming to the cuurent statepoint
+    SDValue getLocation(SDValue val) {
+      if (!Locations.count(val))
+        return SDValue();
+      return Locations[val];
+    }
+    void setLocation(SDValue val, SDValue Location) {
+      assert(!Locations.count(val) &&
+             "Trying to allocate already allocated location");
+      Locations[val] = Location;
+    }
+
+    // Store location of gc values relocated after current statepoint
+    SDValue getRelocLocation(SDValue val) {
+      if (!RelocLocations.count(val))
+        return SDValue();
+      return RelocLocations[val];
+    }
+    void setRelocLocation(SDValue val, SDValue Location) {
+      assert(!RelocLocations.count(val) &&
+             "Trying to allocate already allocated location");
+      RelocLocations[val] = Location;
+    }
+
+    void scheduleRelocCall(const CallInst &RelocCall) {
+      PendingGCRelocateCalls.push_back(&RelocCall);
+    }
+    void relocCallVisited(const CallInst &RelocCall) {
+      SmallVectorImpl<const CallInst*>::iterator itr = 
+        std::find(PendingGCRelocateCalls.begin(), 
+                  PendingGCRelocateCalls.end(), 
+                  &RelocCall);
+      assert(itr != PendingGCRelocateCalls.end() && 
+             "Visited unexpected gcrelocate call");
+      PendingGCRelocateCalls.erase(itr);
+    }
+
+    SDValue allocateStackSlot(EVT ValueType,
+                              SelectionDAGBuilder &Builder) {
+      NumSlotsAllocated++;
+
+      SDValue SpillSlot;
+      if (NumSlotsAllocated > StackSlots.size()) {
+        SpillSlot = 
+          Builder.DAG.CreateStackTemporary(ValueType);
+        StackSlots.push_back(SpillSlot);
+      }
+      else
+        SpillSlot = StackSlots[NumSlotsAllocated - 1];
+
+      return SpillSlot;
+    }
+  private:
+    // Maps pre-relocation value (gc pointer directly incoming into statepoint)
+    // into it's location (currently only stack slots)
+    DenseMap<SDValue, SDValue> Locations;
+    // Map pre-relocated value into it's new relocated location
+    DenseMap<SDValue, SDValue> RelocLocations;
+
+    // Keep track of allocated stack slots and reuse them for values 
+    // in different statepoints
+    unsigned NumSlotsAllocated;
+    SmallVector<SDValue, 10> StackSlots;
+
+    // Keep track of pending gcrelocate calls for consistency check
+    SmallVector<const CallInst *, 10> PendingGCRelocateCalls;
+  };
+
+  StatepointLoweringState StatepointLowering;
+// END CHANGE
+
 private:
 
   /// PendingExports - CopyToReg nodes that copy values to virtual registers
@@ -604,6 +698,13 @@ public:
     N = NewN;
   }
 
+  // This is to support hack in lowerCallFromStatepoint
+  // Should be removed when hack is resolved
+  void removeValue(const Value *V) {
+    if (NodeMap.count(V))
+      NodeMap.erase(V);
+  }
+
   void setUnusedArgValue(const Value *V, SDValue NewN) {
     SDValue &N = UnusedArgNodeMap[V];
     assert(N.getNode() == 0 && "Already set a value for this node!");
@@ -768,6 +869,10 @@ private:
   void visitVACopy(const CallInst &I);
   void visitStackmap(const CallInst &I);
   void visitPatchpoint(const CallInst &I);
+
+  void visitStatepoint(const CallInst &I);
+  void visitGCRelocate(const CallInst &I);
+  void visitGCResult(const CallInst &I);
 
   void visitUserOp1(const Instruction &I) {
     llvm_unreachable("UserOp1 should not exist at instruction selection time!");

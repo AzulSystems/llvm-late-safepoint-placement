@@ -118,7 +118,7 @@ void RegAllocBase::allocatePhysRegs() {
       if (MI)
         MI->emitError("inline assembly requires more registers than available");
       else
-        report_fatal_error("ran out of registers during register allocation");
+        llvm_unreachable("ran out of registers during register allocation");
       // Keep going after reporting the error.
       VRM->assignVirt2Phys(VirtReg->reg,
                  RegClassInfo.getOrder(MRI->getRegClass(VirtReg->reg)).front());

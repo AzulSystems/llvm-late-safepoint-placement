@@ -23,6 +23,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueSymbolTable.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
@@ -4350,8 +4351,15 @@ int LLParser::ParseGetElementPtr(Instruction *&Inst, PerFunctionState &PFS) {
     Indices.push_back(Val);
   }
 
-  if (!Indices.empty() && !BasePointerType->getElementType()->isSized())
+  if (!Indices.empty() && !BasePointerType->getElementType()->isSized()) {
+#ifndef NDEBUG
+    dbgs() << "  ** DIAGNOSTIC\n";
+    dbgs() << "  ** Ptr = "; Ptr->dump(); dbgs() << "\n";
+    dbgs() << "  ** BaseType = "; BaseType->dump(); dbgs() << "\n";
+    dbgs() << "  ** BasePointerType = "; BasePointerType->dump(); dbgs() << "\n";
+#endif
     return Error(Loc, "base element of getelementptr must be sized");
+  }
 
   if (!GetElementPtrInst::getIndexedType(BaseType, Indices))
     return Error(Loc, "invalid getelementptr indices");

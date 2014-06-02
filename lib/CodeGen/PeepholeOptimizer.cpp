@@ -509,8 +509,37 @@ bool PeepholeOptimizer::isLoadFoldable(MachineInstr *MI,
   // loads. It should be checked when processing uses of the load, since
   // uses can be removed during peephole.
   if (!MI->getOperand(0).getSubReg() &&
-      TargetRegisterInfo::isVirtualRegister(Reg) &&
-      MRI->hasOneUse(Reg)) {
+      TargetRegisterInfo::isVirtualRegister(Reg) ) {
+
+    // This was an attempt to make load folding slightly more aggressive.  If a
+    // single instruction contained multiple uses of the load, the stock code
+    // bails.  I added handling for multiple uses within a single instruction,
+    // but it turned out not to actually help my test case.  Also, it seems use
+    // iteration includes uses before a particular def (load) so simply walking
+    // forward one instruction isn't enough.
+    // NOTE: What's currently enabled is semantically equivelent to what was in
+    // upstream at the point this was introduced.  I'm leaving in the modified
+    // code since this seems like a useful optimization, but I don't have time
+    // to fully test it now.
+#if 1
+    if( !MRI->hasOneUse(Reg) ) { return false; }
+#else
+    // Note: This change isn't enough - reg uses can come strictly before the
+    // load: WTF?
+    
+    // must have at least one use
+    if (MRI->use_begin(Reg) == MRI->use_end()) {
+      errs() << "failed: no use\n";
+      return false;
+    }
+    // All uses must be part of a single instruction
+    MachineRegisterInfo::use_iterator UI = MRI->use_begin(Reg);
+    UI.skipInstruction();
+    if( UI != MRI->use_end() ) {
+      errs() << "failed: multiple instructions\n";
+      return false;
+    }
+#endif
     FoldAsLoadDefReg = Reg;
     return true;
   }

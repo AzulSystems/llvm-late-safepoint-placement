@@ -37,6 +37,11 @@
 using namespace llvm;
 
 namespace llvm {
+  cl::opt<bool>
+  KeepTemps("bugpoint-keep-temps",
+                    cl::desc("Keep all the temporary input and output files used by bugpoint"),
+                    cl::init(false));
+
   extern cl::opt<std::string> OutputPrefix;
 }
 
@@ -218,13 +223,16 @@ bool BugDriver::runPasses(Module *Program,
                                    MemoryLimit, &ErrMsg);
 
   // If we are supposed to delete the bitcode file or if the passes crashed,
-  // remove it now.  This may fail if the file was never created, but that's ok.
-  if (DeleteOutput || result != 0)
-    sys::fs::remove(OutputFilename);
-
-  // Remove the temporary input file as well
-  sys::fs::remove(InputFilename.c_str());
-
+  // remove it now.  This may fail if the file was never created, but that's
+  // ok.
+  if( !KeepTemps ) {
+    if (DeleteOutput || result != 0)
+      sys::fs::remove(OutputFilename);
+    
+    // Remove the temporary input file as well
+    sys::fs::remove(InputFilename.c_str());
+  }
+  
   if (!Quiet) {
     if (result == 0)
       outs() << "Success!\n";

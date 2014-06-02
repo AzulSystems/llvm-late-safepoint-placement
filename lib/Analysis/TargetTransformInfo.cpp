@@ -402,6 +402,7 @@ struct NoTTI LLVM_FINAL : ImmutablePass, TargetTransformInfo {
     case Intrinsic::objectsize:
     case Intrinsic::ptr_annotation:
     case Intrinsic::var_annotation:
+    case Intrinsic::gc_relocate:
       // These intrinsics don't actually represent code after lowering.
       return TCC_Free;
     }

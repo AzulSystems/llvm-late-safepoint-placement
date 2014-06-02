@@ -74,7 +74,7 @@ typename enable_if_c<std::numeric_limits<T>::is_integer &&
                      std::numeric_limits<T>::is_signed, std::size_t>::type
 countTrailingZeros(T Val, ZeroBehavior ZB = ZB_Width) LLVM_DELETED_FUNCTION;
 
-#if __GNUC__ >= 4 || _MSC_VER
+#if __GNUC__ >= 4 || defined(_MSC_VER)
 template <>
 inline std::size_t countTrailingZeros<uint32_t>(uint32_t Val, ZeroBehavior ZB) {
   if (ZB != ZB_Undefined && Val == 0)
@@ -82,7 +82,7 @@ inline std::size_t countTrailingZeros<uint32_t>(uint32_t Val, ZeroBehavior ZB) {
 
 #if __has_builtin(__builtin_ctz) || __GNUC_PREREQ(4, 0)
   return __builtin_ctz(Val);
-#elif _MSC_VER
+#elif defined(_MSC_VER)
   unsigned long Index;
   _BitScanForward(&Index, Val);
   return Index;
@@ -97,7 +97,7 @@ inline std::size_t countTrailingZeros<uint64_t>(uint64_t Val, ZeroBehavior ZB) {
 
 #if __has_builtin(__builtin_ctzll) || __GNUC_PREREQ(4, 0)
   return __builtin_ctzll(Val);
-#elif _MSC_VER
+#elif defined(_MSC_VER)
   unsigned long Index;
   _BitScanForward64(&Index, Val);
   return Index;
@@ -140,7 +140,7 @@ typename enable_if_c<std::numeric_limits<T>::is_integer &&
                      std::numeric_limits<T>::is_signed, std::size_t>::type
 countLeadingZeros(T Val, ZeroBehavior ZB = ZB_Width) LLVM_DELETED_FUNCTION;
 
-#if __GNUC__ >= 4 || _MSC_VER
+#if __GNUC__ >= 4 || defined(_MSC_VER)
 template <>
 inline std::size_t countLeadingZeros<uint32_t>(uint32_t Val, ZeroBehavior ZB) {
   if (ZB != ZB_Undefined && Val == 0)
@@ -148,7 +148,7 @@ inline std::size_t countLeadingZeros<uint32_t>(uint32_t Val, ZeroBehavior ZB) {
 
 #if __has_builtin(__builtin_clz) || __GNUC_PREREQ(4, 0)
   return __builtin_clz(Val);
-#elif _MSC_VER
+#elif defined(_MSC_VER)
   unsigned long Index;
   _BitScanReverse(&Index, Val);
   return Index ^ 31;
@@ -163,7 +163,7 @@ inline std::size_t countLeadingZeros<uint64_t>(uint64_t Val, ZeroBehavior ZB) {
 
 #if __has_builtin(__builtin_clzll) || __GNUC_PREREQ(4, 0)
   return __builtin_clzll(Val);
-#elif _MSC_VER
+#elif defined(_MSC_VER)
   unsigned long Index;
   _BitScanReverse64(&Index, Val);
   return Index ^ 63;

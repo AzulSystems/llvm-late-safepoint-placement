@@ -4215,10 +4215,77 @@ breakPartialRegDependency(MachineBasicBlock::iterator MI, unsigned OpNum,
   MI->addRegisterKilled(Reg, TRI, true);
 }
 
+// Modelled very heavily off foldPatchpoint in CodeGen/TargetInstInfo.cpp
+// Note: This routine is really machine independent.  As such, it should be
+// moved into TargetInstInfo analogous to the PATCHPOINT routines.  Note that
+// this code could probably be commoned with those routines as well.
+static MachineInstr *foldSafepoint(MachineFunction &MF,
+                                    MachineInstr *MI,
+                                    const SmallVectorImpl<unsigned> &Ops,
+                                    int FrameIndex,
+                                   const TargetInstrInfo &TII) {
+
+  // TODO: This code is now functionally identical to the foldPatchpoint
+  // routine.  Reuse?
+
+  // Do not fold call target and arguments
+  unsigned StartIdx = StatepointOpers(MI).getVarIdx();
+
+  // Return false if any operands requested for folding are not foldable (not
+  // part of the stackmap's live values).
+  for (SmallVectorImpl<unsigned>::const_iterator I = Ops.begin(), E = Ops.end();
+       I != E; ++I) {
+    if (*I < StartIdx)
+      return 0;
+  }
+
+  MachineInstr *NewMI =
+    MF.CreateMachineInstr(TII.get(MI->getOpcode()), MI->getDebugLoc(), true);
+  MachineInstrBuilder MIB(MF, NewMI);
+
+  for (unsigned i = 0; i < StartIdx; ++i)
+    MIB.addOperand(MI->getOperand(i));
+
+  for (unsigned i = StartIdx; i < MI->getNumOperands(); ++i) {
+    MachineOperand &MO = MI->getOperand(i);
+    if (std::find(Ops.begin(), Ops.end(), i) != Ops.end()) {
+      
+      unsigned SpillSize;
+      unsigned SpillOffset;
+      const TargetRegisterClass *RC =
+        MF.getRegInfo().getRegClass(MO.getReg());
+      bool Valid = TII.getStackSlotRange(RC, MO.getSubReg(), SpillSize,
+                                         SpillOffset, &MF.getTarget());
+      // With deopt state, could have a non-pointer sized value being spilled
+      //assert( SpillSize == 8 );
+      if (!Valid)
+        report_fatal_error("cannot spill patchpoint subregister operand");
+      // Note: The format here is carefully chosen to line up with the special
+      // frame index recongition in PrologEplilogInserter
+      // (replaceFrameIndices).  After that code run, everything down stream
+      // will see rsp, offset (with potentially a base added) where we added
+      // these operands.
+      MIB.addImm(StackMaps::IndirectMemRefOp);
+      MIB.addImm(SpillSize);
+      MIB.addFrameIndex(FrameIndex);
+      MIB.addImm(SpillOffset);
+    } else {
+      MIB.addOperand(MO);
+    }
+  }
+  return NewMI;
+}
+
 MachineInstr*
 X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
                                     const SmallVectorImpl<unsigned> &Ops,
                                     int FrameIndex) const {
+#if 1
+  if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+    return foldSafepoint(MF, MI, Ops, FrameIndex, *this);
+  }
+  #endif
+
   // Check switch flag
   if (NoFusing) return NULL;
 
@@ -4270,6 +4337,12 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
   int FrameIndex;
   if (isLoadFromStackSlot(LoadMI, FrameIndex))
     return foldMemoryOperandImpl(MF, MI, Ops, FrameIndex);
+
+  // TODO: opportunity for optimization -- we might be able to
+  // elide the relocation of the pointer being loaded from the non-stack
+  // location.
+
+  if (MI->getOpcode() == TargetOpcode::STATEPOINT) return NULL;
 
   // Check switch flag
   if (NoFusing) return NULL;
@@ -4407,6 +4480,8 @@ MachineInstr* X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
 
 bool X86InstrInfo::canFoldMemoryOperand(const MachineInstr *MI,
                                   const SmallVectorImpl<unsigned> &Ops) const {
+  if (MI->getOpcode() == TargetOpcode::STATEPOINT) return true;
+
   // Check switch flag
   if (NoFusing) return 0;
 

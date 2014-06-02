@@ -22,9 +22,11 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/CodeGen/StackMaps.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Target/TargetOpcodes.h"
 #include <map>
 using namespace llvm;
 
@@ -47,6 +49,13 @@ void X86ATTInstPrinter::printInst(const MCInst *MI, raw_ostream &OS,
   if (TSFlags & X86II::LOCK)
     OS << "\tlock\n";
 
+  if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+    MI->dump();
+#endif
+    llvm_unreachable("should be handled in MCInstLower");
+    return;
+  }
   // Try to print any aliases first.
   if (!printAliasInstr(MI, OS))
     printInstruction(MI, OS);

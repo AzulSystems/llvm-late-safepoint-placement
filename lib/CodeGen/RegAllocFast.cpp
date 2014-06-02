@@ -572,7 +572,7 @@ RAFast::LiveRegMap::iterator RAFast::allocVirtReg(MachineInstr *MI,
   if (MI->isInlineAsm())
     MI->emitError("inline assembly requires more registers than available");
   else
-    MI->emitError("ran out of registers during register allocation");
+    llvm_unreachable("ran out of registers during register allocation");
   definePhysReg(MI, *AO.begin(), regFree);
   return assignVirtToPhysReg(VirtReg, *AO.begin());
 }

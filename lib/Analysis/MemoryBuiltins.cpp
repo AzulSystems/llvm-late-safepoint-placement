@@ -87,6 +87,15 @@ static Function *getCalledFunction(const Value *V, bool LookThroughBitCast) {
   return Callee;
 }
 
+static bool isFuncWithAttribute(const Value* V, StringRef Attribute,
+                                bool LookThroughBitCast = false) {
+  Function *Callee = getCalledFunction(V, LookThroughBitCast);
+  if (!Callee)
+    return false;
+
+  return Callee->hasFnAttribute(Attribute);
+}
+
 /// \brief Returns the allocation data for the given value if it is a call to a
 /// known allocation function, and NULL otherwise.
 static const AllocFnsTy *getAllocationData(const Value *V, AllocType AllocTy,
@@ -166,6 +175,9 @@ bool llvm::isNoAliasFn(const Value *V, const TargetLibraryInfo *TLI,
 /// allocates uninitialized memory (such as malloc).
 bool llvm::isMallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
                           bool LookThroughBitCast) {
+  if( isFuncWithAttribute(V, "malloc_like", LookThroughBitCast) ) {
+    return true;
+  }
   return getAllocationData(V, MallocLike, TLI, LookThroughBitCast);
 }
 
@@ -173,6 +185,9 @@ bool llvm::isMallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
 /// allocates zero-filled memory (such as calloc).
 bool llvm::isCallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
                           bool LookThroughBitCast) {
+  if( isFuncWithAttribute(V, "calloc_like", LookThroughBitCast) ) {
+    return true;
+  }
   return getAllocationData(V, CallocLike, TLI, LookThroughBitCast);
 }
 
@@ -180,6 +195,12 @@ bool llvm::isCallocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
 /// allocates memory (either malloc, calloc, or strdup like).
 bool llvm::isAllocLikeFn(const Value *V, const TargetLibraryInfo *TLI,
                          bool LookThroughBitCast) {
+  if( isFuncWithAttribute(V, "malloc_like", LookThroughBitCast) ||
+      isFuncWithAttribute(V, "calloc_like", LookThroughBitCast) ||
+      isFuncWithAttribute(V, "alloc_like", LookThroughBitCast) ) {
+    return true;
+  }
+
   return getAllocationData(V, AllocLike, TLI, LookThroughBitCast);
 }
 

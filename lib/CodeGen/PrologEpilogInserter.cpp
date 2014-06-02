@@ -780,6 +780,7 @@ void PEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &Fn,
       // way with simply the frame index and offset rather than any
       // target-specific addressing mode.
       if (MI->isDebugValue() ||
+          MI->getOpcode() == TargetOpcode::STATEPOINT ||
           MI->getOpcode() == TargetOpcode::STACKMAP ||
           MI->getOpcode() == TargetOpcode::PATCHPOINT) {
         assert((!MI->isDebugValue() || i == 0) &&
@@ -787,9 +788,14 @@ void PEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &Fn,
                "DBG_VALUE machine instruction");
         unsigned Reg;
         MachineOperand &Offset = MI->getOperand(i + 1);
-        Offset.setImm(Offset.getImm() +
-                      TFI->getFrameIndexReference(
-                          Fn, MI->getOperand(i).getIndex(), Reg));
+        //errs() << "offset: " << Offset.getImm() << "\n";
+        const unsigned refOffset = (MI->getOpcode() == TargetOpcode::STATEPOINT) ?
+          // GC/STATEPOINT specific
+          TFI->getFrameIndexReferenceForGC(Fn, MI->getOperand(i).getIndex(), Reg) :
+          // General case
+          TFI->getFrameIndexReference(Fn, MI->getOperand(i).getIndex(), Reg);
+
+        Offset.setImm(Offset.getImm() + refOffset);
         MI->getOperand(i).ChangeToRegister(Reg, false /*isDef*/);
         continue;
       }

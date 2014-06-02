@@ -17,6 +17,7 @@
 #include "X86COFFMachineModuleInfo.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Type.h"
@@ -27,8 +28,14 @@
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
+#include "llvm/Support/raw_ostream.h"
 using namespace llvm;
+
+cl::opt<bool> DumpFrameInfoForStatepoint ("dump-frame-info-for-statepoint", cl::init(false));
+cl::opt<bool> DumpNumMemRefsForStatepoint ("dump-num-memrefs-for-statepoint", cl::init(false));
+
 
 namespace {
 
@@ -732,6 +739,161 @@ static void EmitNops(MCStreamer &OS, unsigned NumBytes, bool Is64Bit, const MCSu
   } // while (NumBytes)
 }
 
+static void LowerSTATEPOINT(MCStreamer &OS, StackMaps &SM,
+                            const MachineInstr &MI, bool Is64Bit,
+                            const TargetMachine& TM,
+                            const MCSubtargetInfo& STI,
+                            X86MCInstLower &MCInstLowering) {
+  assert(Is64Bit && "Statepoint currently only supports X86-64");
+
+  // We need to record the frame size for stack walking
+  const MachineFunction* MF = MI.getParent()->getParent();
+  assert(MF && "can't find machine function?");
+
+  if( DumpFrameInfoForStatepoint ) {
+    // For debugging, dump the frame layout
+    const MachineFrameInfo *MFI = MF->getFrameInfo();
+#ifndef NDEBUG
+    MFI->dump(*MF);
+#endif
+  }
+
+  if( DumpNumMemRefsForStatepoint ) {
+    int numMemRefs = std::distance(MI.memoperands_begin(), MI.memoperands_end());
+    errs() << "NumMemRefs: " << numMemRefs << "\n";
+  }
+  
+  const TargetFrameLowering *TFI = TM.getFrameLowering();
+
+  //
+  // Emit call instruction
+  //
+
+  // Lower call target and choose correct opcode
+  const MachineOperand &call_target = StatepointOpers(&MI).getCallTarget();
+  MCOperand call_target_mcop;
+  unsigned call_opcode;
+  switch (call_target.getType())
+  {
+  case MachineOperand::MO_GlobalAddress:
+  case MachineOperand::MO_ExternalSymbol:
+    call_target_mcop = MCInstLowering.LowerSymbolOperand(
+      call_target,
+      MCInstLowering.GetSymbolFromOperand(call_target));
+    call_opcode = X86::CALL64pcrel32;
+    break;
+  case MachineOperand::MO_Register:
+    call_target_mcop = MCOperand::CreateReg(call_target.getReg());
+    call_opcode = X86::CALL64r;
+    break;
+  default:
+    llvm_unreachable("Unsupported operand type in statepoint call target");
+    break;
+  }
+
+  // Emit call
+  MCInst call_inst;
+  call_inst.setOpcode(call_opcode);
+  call_inst.addOperand(call_target_mcop);
+  OS.EmitInstruction(call_inst, STI);
+
+  // Get starting position of vmstate arguments
+  unsigned StartIdx = StatepointOpers(&MI).getVarIdx();
+
+  //
+  // Emit rest of the statepoint arguments
+  //
+
+  // Note: The code here finding the offsets for the spill locations for callee
+  // saved registers is inspired by a mix of:
+  // X86FrameLowering::emitCalleeSavedFrameMoves
+  // PEI::replaceFrameIndices (PrologueEpilogueInserter.cpp)
+  // This probably implies that the first example could be better factored, but
+  // I'm not entirely sure.
+
+  const MachineFrameInfo* MFI = MF->getFrameInfo();
+  MachineModuleInfo &MMI = MF->getMMI();
+  const MCRegisterInfo *MRI = MMI.getContext().getRegisterInfo();
+
+  // Note: The callee saved information here includes only the registers which
+  // were spilled in this function.
+  assert( MFI->isCalleeSavedInfoValid() && "must be valid by now");
+  const std::vector<CalleeSavedInfo>& CSI = MFI->getCalleeSavedInfo();
+
+
+  // pair< Register, Offset Of Spill Slot >
+  std::vector< std::pair<unsigned, int64_t> > callee_pairs;
+  for (std::vector<CalleeSavedInfo>::const_iterator
+         I = CSI.begin(), E = CSI.end(); I != E; ++I) {
+    int64_t Offset;
+    unsigned Reg = I->getReg();
+    unsigned StackReg; // discarded
+    Offset = TFI->getFrameIndexReferenceForGC(*MF, I->getFrameIdx(), StackReg);
+    unsigned DwarfReg = MRI->getDwarfRegNum(Reg, true);
+    //errs() << "C.S. Reg: " << DwarfReg << ", Offset: " << Offset << "\n";
+    callee_pairs.push_back( std::make_pair(DwarfReg, Offset) );
+  }
+  // Record our statepoint node in the same section used by STACKMAP and PATCHPOINT
+  // This is the internal routine TODO - create wrapper
+  SM.recordStackMapOpers(MI, 0xABCDEF00, MI.operands_begin() + StartIdx,
+                         MI.operands_end(),
+                         false,
+                         MFI->getStackSize(),
+                         &callee_pairs);
+  
+  if (OS.hasRawTextSupport()) {
+    std::string s;
+    raw_string_ostream SS(s);
+    SS << "\t#";
+    MI.print(SS, NULL);
+    SS << "\t#STATEPOINT ";
+
+    MCContext &context = OS.getContext();
+    const MCRegisterInfo &MCRI = *context.getRegisterInfo();
+
+    MachineInstr::const_mop_iterator MOI = MI.operands_begin() + StartIdx;
+    MachineInstr::const_mop_iterator MOE = MI.operands_end();
+    while (MOI != MOE) {
+      StackMaps::LocationVec Locs;
+      StackMaps::LiveOutVec LiveOuts;
+      MOI = SM.parseOperand(MOI, MOE, Locs, LiveOuts);
+      if (Locs.size() < 1)
+        continue;
+      assert( Locs.size() == 1 );
+      assert( LiveOuts.size() == 0 );
+      
+      StackMaps::Location Loc = Locs[0];
+      switch (Loc.LocType) {
+      case StackMaps::Location::Unprocessed:
+      case StackMaps::Location::Direct:
+        llvm_unreachable("unsupported operand type for STATEPOINT");
+      case StackMaps::Location::Constant:
+        SS << "<Constant " << Loc.Offset << ">";
+        break;
+      case StackMaps::Location::ConstantIndex:
+        llvm_unreachable("unsupported operand type for STATEPOINT");
+        break;
+      case StackMaps::Location::Register: {
+        SS << "<Register " << MCRI.getName(Loc.Reg) << ">";
+        break;
+      }
+      case StackMaps::Location::Indirect: {
+        SS << "<Indirect " << MCRI.getName(Loc.Reg)
+           << " + " << Loc.Offset << ">";
+        break;
+      }
+      }
+
+      if (MOI != MOE) {
+        SS << ", ";
+      }
+
+    }
+    OS.EmitRawText(SS.str());
+  }
+}
+
+
 // Lower a stackmap of the form:
 // <id>, <shadowBytes>, ...
 static void LowerSTACKMAP(MCStreamer &OS, StackMaps &SM,
@@ -864,7 +1026,9 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
       .addExpr(DotExpr));
     return;
   }
-
+  case TargetOpcode::STATEPOINT:
+    return LowerSTATEPOINT(OutStreamer, SM, *MI, Subtarget->is64Bit(), TM,
+      getSubtargetInfo(), MCInstLowering);
   case TargetOpcode::STACKMAP:
     return LowerSTACKMAP(OutStreamer, SM, *MI, Subtarget->is64Bit(), getSubtargetInfo());
 

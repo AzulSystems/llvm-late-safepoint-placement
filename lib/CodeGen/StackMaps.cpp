@@ -181,7 +181,9 @@ StackMaps::parseRegisterLiveOutMask(const uint32_t *Mask) const {
 void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
                                     MachineInstr::const_mop_iterator MOI,
                                     MachineInstr::const_mop_iterator MOE,
-                                    bool recordResult) {
+                                    bool recordResult,
+                                    uint64_t frameSize,
+                                    const CalleePairVecTy* callee_pairs) {
 
   MCContext &OutContext = AP.OutStreamer.getContext();
   MCSymbol *MILabel = OutContext.CreateTempSymbol();
@@ -220,7 +222,8 @@ void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
     MCSymbolRefExpr::Create(AP.CurrentFnSym, OutContext),
     OutContext);
 
-  CSInfos.push_back(CallsiteInfo(CSOffsetExpr, ID, Locations, LiveOuts));
+  CSInfos.push_back( CallsiteInfo(CSOffsetExpr, ID, Locations, LiveOuts, frameSize,
+                                  callee_pairs ? *callee_pairs : CalleePairVecTy()) );
 
   // Record the stack size of the current function.
   const MachineFrameInfo *MFI = AP.MF->getFrameInfo();
@@ -286,6 +289,14 @@ void StackMaps::recordPatchPoint(const MachineInstr &MI) {
 ///     uint16 : Dwarf RegNum
 ///     uint8  : Reserved
 ///     uint8  : Size in Bytes
+///   CHANGE BEGIN
+///   uint64 : FrameSize
+///   uint16 : NumCalleeSave
+///   [NumCalleSave] {
+///     uint16 : Dwarf RegNum
+///     int32  : Offset
+///   }
+///   CHANGE END
 /// }
 ///
 /// Location Encoding, Type, Value:
@@ -308,9 +319,19 @@ void StackMaps::serializeToStackMapSection() {
     OutContext.getObjectFileInfo()->getStackMapSection();
   AP.OutStreamer.SwitchSection(StackMapSection);
 
-  // Emit a dummy symbol to force section inclusion.
-  AP.OutStreamer.EmitLabel(
-    OutContext.GetOrCreateSymbol(Twine("__LLVM_StackMaps")));
+  // Emit a dummy symbol to force section inclusion.  Make it global so that
+  // program code can use it find the start of the section.
+  // Note: Oddly, using MCSymbolData here doesn't work with asm output only.
+  // Thankfully, using symbolattribute directly does.
+  MCSymbol* Sym =
+    OutContext.GetOrCreateSymbol(Twine("__LLVM_StackMaps"));
+  AP.OutStreamer.EmitLabel(Sym);
+#if 0
+  // Making this global breaks an overly fragile stackmap test.  Since we don't
+  // actually need this at the moment, avoid it.  Keeping the code since it
+  // will likely be useful latter.
+  AP.OutStreamer.EmitSymbolAttribute(Sym, MCSA_Global);
+#endif
 
   // Serialize data.
   const char *WSMP = "Stack Maps: ";
@@ -452,7 +473,19 @@ void StackMaps::serializeToStackMapSection() {
       AP.OutStreamer.EmitIntValue(0, 1);
       AP.OutStreamer.EmitIntValue(LI->Size, 1);
     }
+    // CHANGE BEGIN
+    AP.OutStreamer.EmitIntValue(CSII->FrameSize, 8);
+    AP.OutStreamer.EmitIntValue(CSII->CalleePairs.size(), 2);
+    for( int i = 0; i < CSII->CalleePairs.size(); i++ ) {
+      const std::pair<unsigned, int64_t>& pair = CSII->CalleePairs[i];
+      AP.OutStreamer.EmitIntValue(pair.first, 2);
+      AP.OutStreamer.EmitIntValue(pair.second, 4);
+    }
+    // CHANGE END
   }
+
+  // CHANGE - emit a footer value so we can confirm we parsed the section correctly
+  AP.OutStreamer.EmitIntValue(0x12345678, 8);
 
   AP.OutStreamer.AddBlankLine();
 

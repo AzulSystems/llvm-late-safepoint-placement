@@ -827,6 +827,23 @@ def PATCHPOINT : Instruction {
   let mayLoad = 1;
   let usesCustomInserter = 1;
 }
+// Note: The current implementation is patterned closely on PATCHPOINT.  A more full justification of semantic correctness can be found in SelectionDAGBuilder.cpp.
+// TODO: should we combine the implementation with STACKMAP completely?
+def STATEPOINT : Instruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins variable_ops);
+  let usesCustomInserter = 1;
+  // These two are needed to allow folding of loads and stores
+  let mayLoad = 1;
+  let mayStore = 1;
+  // Try to convince the selection dag schedule not to mess with these
+  // TODO: do we still need this?
+  let isNotDuplicable = 1;
+  let hasSideEffects = 1;
+  // Statepoint combines a call and safepoint into a single pseudo instruction
+  // and therefore it must behave like a call
+  let isCall = 1;
+}
 }
 
 //===----------------------------------------------------------------------===//

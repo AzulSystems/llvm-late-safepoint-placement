@@ -80,6 +80,34 @@ public:
   unsigned getNextScratchIdx(unsigned StartIdx = 0) const;
 };
 
+// Statepoint operands:
+// <num call arguments>, <call target>, [call arguments],
+// <StackMaps::ConstantOp>, <flags>, [vm state and gc values]
+class StatepointOpers {
+private:
+  enum {
+    NCallArgsPos = 0,
+    CallTargetPos = 1
+  };
+
+public:
+  explicit StatepointOpers(const MachineInstr *MI):
+    MI(MI) { }
+
+  // Get starting index of non call related arguments
+  // (statepoint flags, vm state and gc state)
+  unsigned getVarIdx() const {
+    return MI->getOperand(NCallArgsPos).getImm() + 2;
+  }
+
+  const MachineOperand &getCallTarget() const {
+    return MI->getOperand(CallTargetPos);
+  }
+
+private:
+  const MachineInstr *MI;
+};
+
 class StackMaps {
 public:
   struct Location {
@@ -130,21 +158,28 @@ public:
   /// afterwards.
   void serializeToStackMapSection();
 
-private:
+public: //HACK: exposed for our use
   typedef SmallVector<Location, 8> LocationVec;
   typedef SmallVector<LiveOutReg, 8> LiveOutVec;
   typedef MapVector<const MCSymbol *, uint32_t> FnStackSizeMap;
 
+  typedef std::vector< std::pair<unsigned, int64_t> > CalleePairVecTy;
   struct CallsiteInfo {
     const MCExpr *CSOffsetExpr;
     uint64_t ID;
     LocationVec Locations;
     LiveOutVec LiveOuts;
+    // BEGIN CHANGE
+    uint64_t FrameSize;
+    CalleePairVecTy CalleePairs;
+    // END CHANGE
+    
     CallsiteInfo() : CSOffsetExpr(0), ID(0) {}
     CallsiteInfo(const MCExpr *CSOffsetExpr, uint64_t ID,
-                 LocationVec &Locations, LiveOutVec &LiveOuts)
+                 LocationVec &Locations, LiveOutVec &LiveOuts,
+                 uint64_t FrameSize, const CalleePairVecTy& callees)
       : CSOffsetExpr(CSOffsetExpr), ID(ID), Locations(Locations),
-        LiveOuts(LiveOuts) {}
+        LiveOuts(LiveOuts), FrameSize(FrameSize), CalleePairs(callees) {}
   };
 
   typedef std::vector<CallsiteInfo> CallsiteInfoList;
@@ -174,6 +209,8 @@ private:
   ConstantPool ConstPool;
   FnStackSizeMap FnStackSize;
 
+public: // Hack: Exposed for PATCHPOINT
+
   MachineInstr::const_mop_iterator
   parseOperand(MachineInstr::const_mop_iterator MOI,
                MachineInstr::const_mop_iterator MOE,
@@ -195,7 +232,9 @@ private:
   void recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
                            MachineInstr::const_mop_iterator MOI,
                            MachineInstr::const_mop_iterator MOE,
-                           bool recordResult = false);
+                           bool recordResult = false,
+                           uint64_t frameSize = 0,
+                           const CalleePairVecTy* callee_saves = NULL);
 };
 
 }

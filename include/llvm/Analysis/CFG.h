@@ -68,6 +68,10 @@ bool isPotentiallyReachable(const Instruction *From, const Instruction *To,
                             const DominatorTree *DT = 0,
                             const LoopInfo *LI = 0);
 
+bool isPotentiallyReachableNotViaDef(Instruction *sp, Instruction *use, Value *def,
+                            const DominatorTree *DT = 0,
+                            const LoopInfo *LI = 0);
+
 /// \brief Determine whether block 'To' is reachable from 'From', returning
 /// true if uncertain.
 ///

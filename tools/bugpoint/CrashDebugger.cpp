@@ -26,9 +26,12 @@
 #include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/InstIterator.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include <set>
+#include <cstdio>
 using namespace llvm;
 
 namespace {
@@ -39,7 +42,38 @@ namespace {
   cl::opt<bool>
   NoGlobalRM ("disable-global-remove",
          cl::desc("Do not remove global variables"),
-         cl::init(false));
+              cl::init(false));
+
+  cl::opt<bool>
+  DisablePassReduce("bugpoint-disable-pass-reduce",
+                    cl::desc("Do not attempt to reduce the number of passes involved"),
+                    cl::init(false));
+
+  
+  cl::opt<bool>
+  DisableFuncReduce("bugpoint-disable-func-reduce",
+                    cl::desc("Do not attempt to reduce the number of functions involved"),
+                    cl::init(false));
+  cl::opt<bool>
+  DisableBlockReduce("bugpoint-disable-block-reduce",
+                    cl::desc("Do not attempt to reduce the number of basic blocks"),
+                    cl::init(false));
+
+  cl::opt<bool>
+  DisablePathReduce("bugpoint-disable-path-reduce",
+                    cl::desc(""),
+                    cl::init(false));
+  cl::opt<bool>
+  DisableInstReduce("bugpoint-disable-inst-reduce",
+                    cl::desc(""),
+                     cl::init(false));
+
+  cl::opt<bool>
+  DisableFinalCleanup("bugpoint-disable-final-cleanup",
+                    cl::desc(""),
+                    cl::init(false));
+
+
 }
 
 namespace llvm {
@@ -248,10 +282,13 @@ namespace {
   class ReduceCrashingBlocks : public ListReducer<const BasicBlock*> {
     BugDriver &BD;
     bool (*TestFn)(const BugDriver &, Module *);
+
+    bool RunSimplifyCFG;
   public:
     ReduceCrashingBlocks(BugDriver &bd,
-                         bool (*testFn)(const BugDriver &, Module *))
-      : BD(bd), TestFn(testFn) {}
+                         bool (*testFn)(const BugDriver &, Module *),
+                         bool SimplifyCFG)
+      : BD(bd), TestFn(testFn), RunSimplifyCFG(SimplifyCFG) {}
 
     virtual TestResult doTest(std::vector<const BasicBlock*> &Prefix,
                               std::vector<const BasicBlock*> &Kept,
@@ -318,16 +355,18 @@ bool ReduceCrashingBlocks::TestBlocks(std::vector<const BasicBlock*> &BBs) {
                                        (*I)->getName()));
 
   // Now run the CFG simplify pass on the function...
-  std::vector<std::string> Passes;
-  Passes.push_back("simplifycfg");
-  Passes.push_back("verify");
-  Module *New = BD.runPassesOn(M, Passes);
-  delete M;
-  if (!New) {
-    errs() << "simplifycfg failed!\n";
-    exit(1);
+  if( RunSimplifyCFG ) {
+    std::vector<std::string> Passes;
+    Passes.push_back("simplifycfg");
+    Passes.push_back("verify");
+    Module *New = BD.runPassesOn(M, Passes);
+    delete M;
+    if (!New) {
+      errs() << "simplifycfg failed!\n";
+      exit(1);
+    }
+    M = New;
   }
-  M = New;
 
   // Try running on the hacked up program...
   if (TestFn(BD, M)) {
@@ -428,6 +467,239 @@ bool ReduceCrashingInstructions::TestInsts(std::vector<const Instruction*>
   return false;
 }
 
+static std::string branch_key(BranchInst* b) {
+  if( b->isConditional() ) {
+    llvm::Twine tmp = b->getParent()->getName() + b->getCondition()->getName() + b->getSuccessor(0)->getName()  + b->getSuccessor(1)->getName();
+    return tmp.str();
+  } else {
+    llvm::Twine tmp = b->getParent()->getName() + b->getSuccessor(0)->getName();
+    return tmp.str();
+  }
+}
+static void RemovePaths(BugDriver &BD,
+                        bool (*TestFn)(const BugDriver &, Module *),
+                        std::string &Error,
+                        bool Direction) {
+
+  using namespace std;
+  // Since we can't seem to use offsets to restart, keep track of the string
+  // representaiton of the branches we've considered and rejected.
+  set<string> considered;
+  
+ TryAgain:
+  Module* M = CloneModule(BD.getProgram());
+     
+  for (Module::iterator FI = M->begin(), E = M->end();
+       FI != E; ++FI) {
+    if (FI->isDeclaration()) continue;
+
+    for (Function::iterator BI = FI->begin(), E = FI->end();
+         BI != E; ++BI) {
+      BasicBlock& BB = *BI;
+      
+      TerminatorInst* term = BI->getTerminator();        
+      if( BranchInst* branch = dyn_cast<BranchInst>(term) ) {
+        if( !branch->isConditional() ) {
+          continue;
+        }
+        if( 0 != considered.count( branch_key(branch) ) ) {
+          continue;
+        }
+        considered.insert( branch_key(branch) );
+        
+        outs() << "Testing branch: " << *branch;
+
+        int Keep = Direction ? 0 : 1;
+        int Kill = Direction ? 1 : 0;
+        
+        // TODO: this is using only the true path, add support
+        // for false path too.
+        branch->getSuccessor(Kill)->removePredecessor(&BB);
+        
+        // Replace the old terminator instruction.
+        BB.getInstList().pop_back();
+        BranchInst::Create(branch->getSuccessor(Keep),
+                           &BB);
+        // Find out if the pass still crashes on this pass...
+        if (TestFn(BD, M)) {
+          // Made progress, save copy, we're going to keep modifying the
+          // current one.
+          BD.setNewProgram(CloneModule(M));
+        } else {
+          delete M;
+          goto TryAgain;
+        }
+
+      }
+    }
+  }
+  // delete our temporary working copy
+  delete M;
+}
+
+static void CombineBlocks(BugDriver &BD,
+                          bool (*TestFn)(const BugDriver &, Module *),
+                          std::string &Error) {
+  using namespace std;
+  // Since we can't seem to use offsets to restart, keep track of the string
+  // representaiton of the branches we've considered and rejected.
+  set<string> considered;
+  
+ TryAgain:
+  Module* M = CloneModule(BD.getProgram());
+     
+  for (Module::iterator FI = M->begin(), E = M->end();
+       FI != E; ++FI) {
+    if (FI->isDeclaration()) continue;
+
+    for (Function::iterator BI = FI->begin(), E = FI->end();
+         BI != E; ++BI) {
+      BasicBlock& BB = *BI;
+      
+      TerminatorInst* term = BI->getTerminator();        
+      if( BranchInst* branch = dyn_cast<BranchInst>(term) ) {
+        if( branch->isConditional() ) {
+          continue;
+        }
+        if( 0 != considered.count( branch_key(branch) ) ) {
+          continue;
+        }
+        considered.insert( branch_key(branch) );
+        
+        outs() << "Testing branch: " << *branch;
+        BasicBlock* Succ = BB.getUniqueSuccessor();
+        assert(Succ);
+        MergeBlockIntoPredecessor( Succ );
+
+        BI = FI->begin(); //restart search
+
+        // Find out if the pass still crashes on this pass...
+        if (TestFn(BD, M)) {
+          // Made progress, save copy, we're going to keep modifying the
+          // current one.
+          BD.setNewProgram(CloneModule(M));
+        } else {
+          delete M;
+          goto TryAgain;
+        }
+
+      }
+    }
+  }
+  // delete our temporary working copy
+  delete M;
+}
+
+
+static void RemoveDeadBlocks(BugDriver &BD,
+                             bool (*TestFn)(const BugDriver &, Module *),
+                             std::string &Error) {
+
+  using namespace std;
+  set<string> considered;
+  
+ TryAgain:
+  Module* M = CloneModule(BD.getProgram());
+     
+  for (Module::iterator FI = M->begin(), E = M->end();
+       FI != E; ++FI) {
+    if (FI->isDeclaration()) continue;
+
+    for (Function::iterator BI = FI->begin(), E = FI->end();
+         BI != E; ++BI) {
+      BasicBlock& BB = *BI;
+      if( &BB == &BB.getParent()->getEntryBlock() ) continue;
+      
+      int num_preds = std::distance(pred_begin(&BB), pred_end(&BB));
+      if( num_preds > 0 ) continue;
+
+      if( 0 != considered.count( BB.getName() ) ) {
+        continue;
+      }
+      considered.insert( BB.getName() );
+
+      outs() << "Deleting : " << BB.getName();
+      DeleteDeadBlock(&BB);
+
+      BI = FI->begin(); //restart search
+
+      // Find out if the pass still crashes on this pass...
+      if (TestFn(BD, M)) {
+        // Made progress, save copy, we're going to keep modifying the
+        // current one.
+        BD.setNewProgram(CloneModule(M));
+      } else {
+        delete M;
+        goto TryAgain;
+      }
+    }
+  }
+  // delete our temporary working copy
+  delete M;
+}
+
+static void RemoveDirectCalls(BugDriver &BD,
+                              bool (*TestFn)(const BugDriver &, Module *),
+                              std::string &Error) {
+
+  using namespace std;
+  set<string> considered;
+  
+ TryAgain:
+  Module* M = CloneModule(BD.getProgram());
+     
+  for (Module::iterator FI = M->begin(), E = M->end();
+       FI != E; ++FI) {
+    if (FI->isDeclaration()) continue;
+
+    Function* F = &*FI;
+
+    for( inst_iterator itr = inst_begin(F), end = inst_end(F);
+         itr != end; itr++) {
+      Instruction* inst = &*itr;
+      // TODO: handle invokes as well
+      if( !isa<CallInst>(inst) ) {
+        continue;
+      }
+      // Since we're not removing instructions in this pass, the index should
+      // be stable
+      char buf[200];
+      snprintf(buf, 200, "%d", std::distance(inst_begin(F), itr));
+      string cache_key = (F->getName() + buf).str();
+      if( 0 != considered.count( cache_key ) ) {
+        continue;
+      }
+      considered.insert( cache_key );
+
+      CallInst* CI = cast<CallInst>(inst);
+      Function* Callee = CI->getCalledFunction();
+      if( !Callee ) {
+      // p.s. indirect calls are handled by the general instruction removal logic
+        continue;
+      }
+      // Does the actual direct callee matter?
+      outs() << "Deleting Callee: " << cache_key << "--" << Callee->getName();
+      CI->setCalledFunction( UndefValue::get(Callee->getType()) );
+
+      itr = inst_begin(F); //restart search
+
+      // Find out if the pass still crashes on this pass...
+      if (TestFn(BD, M)) {
+        // Made progress, save copy, we're going to keep modifying the
+        // current one.
+        BD.setNewProgram(CloneModule(M));
+      } else {
+        delete M;
+        goto TryAgain;
+      }
+    }
+  }
+  // delete our temporary working copy
+  delete M;
+}
+
+
+
 /// DebugACrash - Given a predicate that determines whether a component crashes
 /// on a program, try to destructively reduce the program while still keeping
 /// the predicate true.
@@ -494,13 +766,12 @@ static bool DebugACrash(BugDriver &BD,
     if (!I->isDeclaration())
       Functions.push_back(I);
 
-  if (Functions.size() > 1 && !BugpointIsInterrupted) {
+  if (!DisableFuncReduce && Functions.size() > 1 && !BugpointIsInterrupted) {
     outs() << "\n*** Attempting to reduce the number of functions "
       "in the testcase\n";
 
     unsigned OldSize = Functions.size();
     ReduceCrashingFunctions(BD, TestFn).reduceList(Functions, Error);
-
     if (Functions.size() < OldSize)
       BD.EmitProgressBitcode(BD.getProgram(), "reduced-function");
   }
@@ -510,18 +781,62 @@ static bool DebugACrash(BugDriver &BD,
   // to a return instruction then running simplifycfg, which can potentially
   // shrinks the code dramatically quickly
   //
-  if (!DisableSimplifyCFG && !BugpointIsInterrupted) {
+  if (!DisableBlockReduce && !DisableSimplifyCFG && !BugpointIsInterrupted) {
     std::vector<const BasicBlock*> Blocks;
     for (Module::const_iterator I = BD.getProgram()->begin(),
            E = BD.getProgram()->end(); I != E; ++I)
       for (Function::const_iterator FI = I->begin(), E = I->end(); FI !=E; ++FI)
         Blocks.push_back(FI);
     unsigned OldSize = Blocks.size();
-    ReduceCrashingBlocks(BD, TestFn).reduceList(Blocks, Error);
+    ReduceCrashingBlocks(BD, TestFn, true).reduceList(Blocks, Error);
     if (Blocks.size() < OldSize)
       BD.EmitProgressBitcode(BD.getProgram(), "reduced-blocks");
   }
 
+
+  // See if we can remove any conditional branches that are left.  The above
+  // code will kill blocks reachable from the branches, but won't simplify the
+  // branches themselves.  This matters a lot with assert type branch patterns.
+  if( !DisablePathReduce ) {
+    RemovePaths(BD, TestFn, Error, true);
+    RemovePaths(BD, TestFn, Error, false);
+    RemoveDeadBlocks(BD, TestFn, Error);
+    CombineBlocks(BD, TestFn, Error);
+
+    // Now run the CFG simplify pass on the function...
+    if( !DisableSimplifyCFG ) {
+      std::vector<std::string> Passes;
+      Passes.push_back("simplifycfg");
+      Passes.push_back("verify");
+      Module *New = BD.runPassesOn(BD.getProgram(), Passes);
+      if (!New) {
+        errs() << "simplifycfg failed!\n";
+        exit(1);
+      }
+      if (TestFn(BD, New)) {
+        BD.setNewProgram(New);
+      }
+    }
+    BD.EmitProgressBitcode(BD.getProgram(), "reduced-paths");
+  }
+
+  // Run the same thing again, but this time don't use simplifycfg.  This
+  // allows pruning more paths, but at the cost of output which is not stable
+  // under application of simplifycfg
+  if (!DisableBlockReduce && !DisableSimplifyCFG && !BugpointIsInterrupted) {
+    std::vector<const BasicBlock*> Blocks;
+    for (Module::const_iterator I = BD.getProgram()->begin(),
+           E = BD.getProgram()->end(); I != E; ++I)
+      for (Function::const_iterator FI = I->begin(), E = I->end(); FI !=E; ++FI)
+        Blocks.push_back(FI);
+    unsigned OldSize = Blocks.size();
+    ReduceCrashingBlocks(BD, TestFn, false).reduceList(Blocks, Error);
+    if (Blocks.size() < OldSize)
+      BD.EmitProgressBitcode(BD.getProgram(), "reduced-blocks-unstable");
+  }
+
+
+  if( !DisableInstReduce ) {
   // Attempt to delete instructions using bisection. This should help out nasty
   // cases with large basic blocks where the problem is at one end.
   if (!BugpointIsInterrupted) {
@@ -535,6 +850,8 @@ static bool DebugACrash(BugDriver &BD,
           if (!isa<TerminatorInst>(I))
             Insts.push_back(I);
 
+    // Warning: This will introduce undef values which can greatly destablize
+    // the IR with respect to simplifycfg.  
     ReduceCrashingInstructions(BD, TestFn).reduceList(Insts, Error);
   }
 
@@ -572,10 +889,8 @@ static bool DebugACrash(BugDriver &BD,
               --InstructionsToSkipBeforeDeleting;
             } else {
               if (BugpointIsInterrupted) goto ExitLoops;
-
-              if (isa<LandingPadInst>(I))
+              if (isa<LandingPadInst>(I) )
                 continue;
-
               outs() << "Checking instruction: " << *I;
               Module *M = BD.deleteInstructionFromProgram(I, Simplification);
 
@@ -600,12 +915,29 @@ static bool DebugACrash(BugDriver &BD,
     }
 
   } while (Simplification);
-ExitLoops:
+  ExitLoops:
+  (void)(1 + 3); //required for label target
+  } // DisableInstReduce
+
+  RemoveDirectCalls(BD, TestFn, Error);
 
   // Try to clean up the testcase by running funcresolve and globaldce...
-  if (!BugpointIsInterrupted) {
+  if ( !DisableFinalCleanup && !BugpointIsInterrupted) {
     outs() << "\n*** Attempting to perform final cleanups: ";
+    // try twice - once without changing semantics, once with.  This hopefully
+    // allows us to do some cleanup even when the semantic changing ones fail.
+    // TODO: This should be better factored.
     Module *M = CloneModule(BD.getProgram());
+    M = BD.performFinalCleanups(M, false);
+
+    // Find out if the pass still crashes on the cleaned up program...
+    if (TestFn(BD, M)) {
+      BD.setNewProgram(M);     // Yup, it does, keep the reduced version...
+    } else {
+      delete M;
+    }
+
+    M = CloneModule(BD.getProgram());
     M = BD.performFinalCleanups(M, true);
 
     // Find out if the pass still crashes on the cleaned up program...
@@ -614,7 +946,7 @@ ExitLoops:
     } else {
       delete M;
     }
-  }
+}
 
   BD.EmitProgressBitcode(BD.getProgram(), "reduced-simplified");
 
@@ -634,9 +966,12 @@ bool BugDriver::debugOptimizerCrash(const std::string &ID) {
 
   std::string Error;
   // Reduce the list of passes which causes the optimizer to crash...
-  if (!BugpointIsInterrupted)
+  if (!DisablePassReduce && !BugpointIsInterrupted)
     ReducePassList(*this).reduceList(PassesToRun, Error);
   assert(Error.empty());
+
+  // unconditionally verify the IR - otherwise failures might show up later on
+  PassesToRun.push_back("verify");
 
   outs() << "\n*** Found crashing pass"
          << (PassesToRun.size() == 1 ? ": " : "es: ")

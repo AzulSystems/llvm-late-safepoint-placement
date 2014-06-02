@@ -2682,7 +2682,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
         StackPtr = DAG.getCopyFromReg(Chain, dl, RegInfo->getStackRegister(),
                                       getPointerTy());
       MemOpChains.push_back(LowerMemOpCallTo(Chain, StackPtr, Arg,
-                                             dl, DAG, VA, Flags));
+                                                          dl, DAG, VA, Flags));
     }
   }
 
@@ -2930,6 +2930,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   Chain = DAG.getNode(X86ISD::CALL, dl, NodeTys, &Ops[0], Ops.size());
   InFlag = Chain.getValue(1);
+
 
   // Create the CALLSEQ_END node.
   unsigned NumBytesForCalleeToPop;
@@ -16363,6 +16364,11 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   case X86::EH_SjLj_LongJmp64:
     return emitEHSjLjLongJmp(MI, BB);
 
+  case TargetOpcode::STATEPOINT:
+    // As an implementation detail, STATEPOINT shares the STACKMAP format at
+    // this point in the process.  We devirge later
+    return emitPatchPoint(MI, BB);
+
   case TargetOpcode::STACKMAP:
   case TargetOpcode::PATCHPOINT:
     return emitPatchPoint(MI, BB);
@@ -17312,7 +17318,7 @@ static SDValue PerformSELECTCombine(SDNode *N, SelectionDAG &DAG,
       // Check if SETCC has already been promoted
       TLI.getSetCCResultType(*DAG.getContext(), VT) == CondVT &&
       // Check that condition value type matches vselect operand type
-      CondVT == VT) { 
+      CondVT == VT) {
 
     assert(Cond.getValueType().isVector() &&
            "vector select expects a vector selector!");
@@ -17997,7 +18003,7 @@ static SDValue CMPEQCombine(SDNode *N, SelectionDAG &DAG,
           SDValue OnesOrZeroesF = DAG.getNode(X86ISD::FSETCC, DL,
                                               CMP00.getValueType(), CMP00, CMP01,
                                               DAG.getConstant(x86cc, MVT::i8));
-          MVT IntVT = (is64BitFP ? MVT::i64 : MVT::i32); 
+          MVT IntVT = (is64BitFP ? MVT::i64 : MVT::i32);
           SDValue OnesOrZeroesI = DAG.getNode(ISD::BITCAST, DL, IntVT,
                                               OnesOrZeroesF);
           SDValue ANDed = DAG.getNode(ISD::AND, DL, IntVT, OnesOrZeroesI,

@@ -66,6 +66,34 @@ void set_subtract(S1Ty &S1, const S2Ty &S2) {
     S1.erase(*SI);
 }
 
+/// set_equals(A, B) - Compute A == B.
+///
+template <class S1Ty, class S2Ty>
+bool set_equals(const S1Ty &S1, const S2Ty &S2) {
+  if (S1.size() != S2.size()) return false;
+  for (typename S2Ty::const_iterator SI = S2.begin(), SE = S2.end();
+       SI != SE; ++SI) {
+    if (!S1.count(*SI)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// set_is_subset(A, B) - Return true if A is a subset of B
+///
+template <class S1Ty, class S2Ty>
+bool set_is_subset(const S1Ty &S1, const S2Ty &S2) {
+  if (S1.size() > S2.size()) return false;
+  for (typename S1Ty::const_iterator SI = S1.begin(), SE = S1.end();
+       SI != SE; ++SI) {
+    if (!S2.count(*SI)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // End llvm namespace
 
 #endif

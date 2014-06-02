@@ -187,6 +187,11 @@ public:
     return const_cast<BasicBlock*>(this)->getUniquePredecessor();
   }
 
+  BasicBlock *getUniqueSuccessor();
+  const BasicBlock *getUniqueSuccessor() const {
+    return const_cast<BasicBlock*>(this)->getUniqueSuccessor();
+  }
+
   //===--------------------------------------------------------------------===//
   /// Instruction iterator methods
   ///

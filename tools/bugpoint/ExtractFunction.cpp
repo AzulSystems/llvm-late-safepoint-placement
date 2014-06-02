@@ -141,6 +141,7 @@ Module *BugDriver::performFinalCleanups(Module *M, bool MayModifySemantics) {
 
   std::vector<std::string> CleanupPasses;
   CleanupPasses.push_back("globaldce");
+  CleanupPasses.push_back("strip-dead-prototypes");
 
   if (MayModifySemantics)
     CleanupPasses.push_back("deadarghaX0r");

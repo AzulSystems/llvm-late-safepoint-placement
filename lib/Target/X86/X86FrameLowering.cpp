@@ -962,6 +962,36 @@ int X86FrameLowering::getFrameIndexReference(const MachineFunction &MF, int FI,
   return getFrameIndexOffset(MF, FI);
 }
 
+// --------------- BEGIN CHANGE --------------------
+
+// Simplified from getFrameIndexOffset keeping only StackPointer cases
+int X86FrameLowering::getFrameIndexOffsetForGC(const MachineFunction &MF, int FI) const {
+  const X86RegisterInfo *RegInfo =
+    static_cast<const X86RegisterInfo*>(MF.getTarget().getRegisterInfo());
+  const MachineFrameInfo *MFI = MF.getFrameInfo();
+  int Offset = MFI->getObjectOffset(FI) - getOffsetOfLocalArea();
+  uint64_t StackSize = MFI->getStackSize();
+
+  if (FI < 0) {
+    // Skip the saved EBP.
+    return Offset + RegInfo->getSlotSize();
+  } else {
+    assert((-(Offset + StackSize)) % MFI->getObjectAlignment(FI) == 0);
+    return Offset + StackSize;
+  }
+  // FIXME: Support tail calls
+}
+// Simplified from getFrameIndexReference keeping only StackPointer cases
+int X86FrameLowering::getFrameIndexReferenceForGC(const MachineFunction &MF, int FI,
+                                                  unsigned &FrameReg) const {
+  const X86RegisterInfo *RegInfo =
+    static_cast<const X86RegisterInfo*>(MF.getTarget().getRegisterInfo());
+  FrameReg = RegInfo->getStackRegister();
+  return getFrameIndexOffsetForGC(MF, FI);
+}
+
+// ------------- END CHANGE ---------------------
+
 bool X86FrameLowering::spillCalleeSavedRegisters(MachineBasicBlock &MBB,
                                              MachineBasicBlock::iterator MI,
                                         const std::vector<CalleeSavedInfo> &CSI,

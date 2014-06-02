@@ -275,10 +275,25 @@ void CallInst::init(Value *Func, ArrayRef<Value *> Args, const Twine &NameStr) {
           (FTy->isVarArg() && Args.size() > FTy->getNumParams())) &&
          "Calling a function with bad signature!");
 
-  for (unsigned i = 0; i != Args.size(); ++i)
+  for (unsigned i = 0; i != Args.size(); ++i) {
+    if (i < FTy->getNumParams() &&
+        FTy->getParamType(i) != Args[i]->getType()) {
+      dbgs() << "  ** DIAGNOSTIC\n";
+      dbgs() << "  ** i = " << i << "\n";
+      dbgs() << "  ** FTy->getParamType(i)->dump() = ";
+      FTy->getParamType(i)->dump();
+      dbgs() << "\n";
+      dbgs() << "  ** Args[i] = ";
+      Args[i]->dump();
+      dbgs() << "\n";
+      dbgs() << "  ** Args[i]->getType() = ";
+      Args[i]->getType()->dump();
+      dbgs() << "\n";
+    }
     assert((i >= FTy->getNumParams() || 
             FTy->getParamType(i) == Args[i]->getType()) &&
            "Calling a function with a bad signature!");
+  }
 #endif
 
   std::copy(Args.begin(), Args.end(), op_begin());

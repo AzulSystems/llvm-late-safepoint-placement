@@ -762,6 +762,12 @@ m_PtrToInt(const OpTy &Op) {
   return CastClass_match<OpTy, Instruction::PtrToInt>(Op);
 }
 
+template<typename OpTy>
+inline CastClass_match<OpTy, Instruction::IntToPtr>
+m_IntToPtr(const OpTy &Op) {
+  return CastClass_match<OpTy, Instruction::IntToPtr>(Op);
+}
+
 /// m_Trunc
 template<typename OpTy>
 inline CastClass_match<OpTy, Instruction::Trunc>
@@ -1110,6 +1116,26 @@ m_UnordFMin(const LHS &L, const RHS &R) {
 }
 
 template<typename Opnd_t>
+struct LoadInst_match {
+  Opnd_t Op;
+
+  explicit LoadInst_match(const Opnd_t &Op) : Op(Op) { }
+
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    if (LoadInst *LI = dyn_cast<LoadInst>(V)) {
+      return Op.match(LI->getPointerOperand());
+    }
+    return false;
+  }
+};
+
+template<typename Opnd_t>
+inline LoadInst_match<Opnd_t> m_LoadInst(const Opnd_t& Op) {
+  return LoadInst_match<Opnd_t>(Op);
+}
+
+template<typename Opnd_t>
 struct Argument_match {
   unsigned OpI;
   Opnd_t Val;
@@ -1137,6 +1163,19 @@ struct IntrinsicID_match {
   bool match(OpTy *V) {
     IntrinsicInst *II = dyn_cast<IntrinsicInst>(V);
     return II && II->getIntrinsicID() == ID;
+  }
+};
+
+struct FunctionConstant_match {
+  Function *function;
+  FunctionConstant_match(Function *function) : function(function) { }
+
+  template<typename OpTy>
+  bool match(OpTy *V) {
+    if (CallInst *CI = dyn_cast<CallInst>(V)) {
+      return CI->getCalledFunction() == function;
+    }
+    return false;
   }
 };
 
@@ -1168,6 +1207,20 @@ struct m_Intrinsic_Ty<T0, T1, T2, T3> {
                             Argument_match<T3> > Ty;
 };
 
+template <typename T0 = void, typename T1 = void, typename T2 = void,
+          typename T3 = void, typename T4 = void, typename T5 = void,
+          typename T6 = void, typename T7 = void, typename T8 = void,
+          typename T9 = void, typename T10 = void> struct m_Call_Ty;
+template <typename T0>
+struct m_Call_Ty<T0> {
+  typedef match_combine_and<FunctionConstant_match, Argument_match<T0> > Ty;
+};
+template <typename T0, typename T1>
+struct m_Call_Ty<T0, T1> {
+  typedef match_combine_and<typename m_Call_Ty<T0>::Ty,
+                            Argument_match<T1> > Ty;
+};
+
 /// Match intrinsic calls like this:
 ///   m_Intrinsic<Intrinsic::fabs>(m_Value(X))
 template <Intrinsic::ID IntrID>
@@ -1196,6 +1249,18 @@ template<Intrinsic::ID IntrID, typename T0, typename T1, typename T2, typename T
 inline typename m_Intrinsic_Ty<T0, T1, T2, T3>::Ty
 m_Intrinsic(const T0 &Op0, const T1 &Op1, const T2 &Op2, const T3 &Op3) {
   return m_CombineAnd(m_Intrinsic<IntrID>(Op0, Op1, Op2), m_Argument<3>(Op3));
+}
+
+template<typename T0>
+inline typename m_Call_Ty<T0>::Ty
+m_Call(Function *function, const T0 &Op) {
+  return m_CombineAnd(FunctionConstant_match(function), m_Argument<0>(Op));
+}
+
+template<typename T0, typename T1>
+inline typename m_Call_Ty<T0, T1>::Ty
+m_Call(Function *function, const T0 &Op0, const T1 &Op1) {
+  return m_CombineAnd(m_Call(function, Op0), m_Argument<1>(Op1));
 }
 
 // Helper intrinsic matching specializations

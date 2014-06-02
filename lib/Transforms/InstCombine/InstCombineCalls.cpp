@@ -752,6 +752,15 @@ static bool isSafeToEliminateVarargsCast(const CallSite CS,
   if (!CI->isLosslessCast())
     return false;
 
+  // If this is an intrinsic, avoid munging types.  We need types for
+  // statepoint reconstruction in SelectionDAG.  This is probably something
+  // which could be upstreamed since the entire point of intrinsics is that
+  // they are understandable by the optimizer.  :)
+  if( CS.getCalledFunction() &&
+      0 != CS.getCalledFunction()->getIntrinsicID() ) {
+    return false;
+  }
+
   // The size of ByVal or InAlloca arguments is derived from the type, so we
   // can't change to a type with a different size.  If the size were
   // passed explicitly we could avoid this check.

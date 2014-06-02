@@ -186,6 +186,16 @@ public:
   virtual int getFrameIndexReference(const MachineFunction &MF, int FI,
                                      unsigned &FrameReg) const;
 
+  /// ------ BEGIN CHANGE --------
+  /// Same as above, except that the 'base register' will always be RSP, not
+  /// RBP on x86.  This is required for integration with our runtime  
+  virtual int getFrameIndexReferenceForGC(const MachineFunction &MF, int FI,
+                                          unsigned &FrameReg) const {
+    // default to calling normal version, we override this on x86 only
+    return getFrameIndexReference(MF, FI, FrameReg);
+  }
+  /// ------ END CHANGE ----------
+
   /// processFunctionBeforeCalleeSavedScan - This method is called immediately
   /// before PrologEpilogInserter scans the physical registers used to determine
   /// what callee saved registers should be spilled. This method is optional.

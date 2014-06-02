@@ -921,10 +921,23 @@ TargetLoweringBase::emitPatchPoint(MachineInstr *MI,
     // Copy operands before the frame-index.
     for (unsigned i = 0; i < OperIdx; ++i)
       MIB.addOperand(MI->getOperand(i));
+
+    if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+      // Statepoints do not support Direct operands.
+      // Here we emit exact same operand but with different type.
+      MIB.addImm(StackMaps::IndirectMemRefOp);
+      // Size is stored in bits
+      MIB.addImm(MF.getFrameInfo()->getObjectSize(MO.getIndex()) * 8);
+      MIB.addFrameIndex(MO.getIndex());
+      MIB.addImm(0);
+    }
     // Add frame index operands: direct-mem-ref tag, #FI, offset.
-    MIB.addImm(StackMaps::DirectMemRefOp);
-    MIB.addOperand(MI->getOperand(OperIdx));
-    MIB.addImm(0);
+    else {
+      MIB.addImm(StackMaps::DirectMemRefOp);
+      MIB.addOperand(MI->getOperand(OperIdx));
+      MIB.addImm(0);
+    }
+
     // Copy the operands after the frame index.
     for (unsigned i = OperIdx + 1; i != MI->getNumOperands(); ++i)
       MIB.addOperand(MI->getOperand(i));
@@ -936,9 +949,15 @@ TargetLoweringBase::emitPatchPoint(MachineInstr *MI,
     // Add a new memory operand for this FI.
     const MachineFrameInfo &MFI = *MF.getFrameInfo();
     assert(MFI.getObjectOffset(FI) != -1);
+
+    unsigned Flags = MachineMemOperand::MOLoad;
+    if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+      Flags |= MachineMemOperand::MOStore;
+      Flags |= MachineMemOperand::MOVolatile;
+    }
     MachineMemOperand *MMO =
       MF.getMachineMemOperand(MachinePointerInfo::getFixedStack(FI),
-                              MachineMemOperand::MOLoad,
+                              Flags,
                               TM.getDataLayout()->getPointerSize(),
                               MFI.getObjectAlignment(FI));
     MIB->addMemOperand(MF, MMO);

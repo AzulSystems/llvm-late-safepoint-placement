@@ -16,6 +16,10 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Statepoint.h"
+#include "llvm/Support/CallSite.h"
 
 using namespace llvm;
 
@@ -143,7 +147,7 @@ static bool isPotentiallyReachableInner(SmallVectorImpl<BasicBlock *> &Worklist,
 
   // Limit the number of blocks we visit. The goal is to avoid run-away compile
   // times on large CFGs without hampering sensible code. Arbitrarily chosen.
-  unsigned Limit = 32;
+  unsigned Limit = 128;
   SmallSet<const BasicBlock*, 64> Visited;
   do {
     BasicBlock *BB = Worklist.pop_back_val();
@@ -240,3 +244,219 @@ bool llvm::isPotentiallyReachable(const Instruction *A, const Instruction *B,
                                      const_cast<BasicBlock*>(B->getParent()),
                                      DT, LI);
 }
+
+static bool isPotentiallyReachableInnerNotViaDef(const BasicBlock *DefBB, SmallVectorImpl<BasicBlock *> &Worklist, const BasicBlock *SpBB,
+                                        std::set<BasicBlock*>& EndBlocks,
+                                        const DominatorTree *DT,
+                                        const LoopInfo *LI) {
+
+  // we can not conservatively include the use when timeout
+  SmallSet<const BasicBlock*, 64> Visited;
+
+  do {
+    // This is a depth-first search for a path not via def
+    // return true whenever the first valid path is found
+    BasicBlock *BB = Worklist.pop_back_val();
+
+    // if has already visited
+    if (!Visited.insert(BB))
+      continue;
+
+    // Here we have 3 cases:
+    // 1. If BB == SpBB, we just start the search from safepoint, and def should before safepoint in the same block, and BB == DefBB does not mean we reach the def in the search path.
+    // 2. If DefBB == StopBB, it infers that use is a phi otherwise this case would be returned in a fastpath in isPotentiallyReachableNotViaDef().
+    // and if use is a phi and in the same block with def, we reach use before def.
+    // However, this case could not happen because if use is phi, it will stop at one of its incoming block and return true.
+    // 3. If only BB == DefBB, we reach the def in the search path and this path should be discarded.
+    if (BB == DefBB && BB != SpBB)
+      continue;
+
+    if (EndBlocks.find(BB) != EndBlocks.end())
+      return true;
+
+#ifdef OPTIMIZED_LIVENESS_ANALYSIS
+    // If curent basicblock, the defblock, and any incoming block of PhiNode are not within a loop,
+    // we can strip the loop and only add the loop exsit basicblock into the worklist to make the search shorter
+    if (LI && (DefBB == NULL || !loopContainsBoth(LI, BB, DefBB))) {
+      bool contains = false;
+      for (std::set<BasicBlock*>::iterator itr = EndBlocks.begin(), end = EndBlocks.end(); itr != end; itr++) {
+        if (loopContainsBoth(LI, BB, *itr)) {
+          contains = true;
+          break;
+        }
+      }
+      if (!contains) {
+        if (const Loop *Outer = getOutermostLoop(LI, BB)) {
+          // All blocks in a single loop are reachable from all other blocks. From
+          // any of these blocks, we can skip directly to the exits of the loop,
+          // ignoring any other blocks inside the loop body.
+          Outer->getExitBlocks(Worklist);
+        }
+      } else {
+        Worklist.append(succ_begin(BB), succ_end(BB));
+      }
+    } else {
+      Worklist.append(succ_begin(BB), succ_end(BB));
+    }
+#else
+    Worklist.append(succ_begin(BB), succ_end(BB));
+#endif
+  } while (!Worklist.empty());
+
+  // We have exhausted all possible paths and are certain that 'To' can not be
+  // reached from 'From'.
+  return false;
+}
+
+// This is a check to see if there is a path between the safepoint and use via the def
+bool llvm::isPotentiallyReachableNotViaDef(Instruction *SP, Instruction *USE, Value *DEF,
+                                  const DominatorTree *DT, const LoopInfo *LI) {
+  assert(SP->getParent()->getParent() == USE->getParent()->getParent() &&
+         "This analysis is function-local!");
+
+  SmallVector<BasicBlock*, 32> Worklist;
+
+  bool DefIsArg = isa<Argument>(DEF);
+
+  BasicBlock *UseBlock = const_cast<BasicBlock*>(USE->getParent());
+  BasicBlock *SpBlock = const_cast<BasicBlock*>(SP->getParent());
+
+  // def could be an argument which has no basicblock
+  BasicBlock *DefBlock = DefIsArg? NULL : const_cast<BasicBlock*>(cast<Instruction>(DEF)->getParent());
+
+  // Port the hack on VMState in Alternative Liveness Analysis
+  if( isStatepoint(USE) ) {
+    StatepointOperands statepoint(USE);
+    bool isNonDeoptArg = false;
+    for(ImmutableCallSite::arg_iterator itr = statepoint.call_args_begin(), end = statepoint.call_args_end();
+        itr != end; itr++) {
+      if( *itr == DEF ) {
+        isNonDeoptArg = true;
+        break;
+      }
+    }
+    for(ImmutableCallSite::arg_iterator itr = statepoint.gc_args_begin(), end = statepoint.gc_args_end();
+        itr != end && !isNonDeoptArg; itr++) {
+      if( *itr == DEF ) {
+        isNonDeoptArg = true;
+        break;
+      }
+    }
+    if( !isNonDeoptArg ) {
+      return false;
+    }
+  }
+
+  // If use is live at the original call site which triggers the safepoint, it will be live during the call
+  // This check should be enough to catch the case.
+  // Backedge safepoint call is a pure "call void @do_safepoint()" and dose not have any use. It wont mix up with call safepoint.
+  if (SP == USE)
+    return true;
+
+  std::set<BasicBlock*> EndBlocks;
+  // If use is in PHINode, EndBlocks should be one of its incoming basic blocks
+  if (isa<PHINode>(USE)) {
+    const PHINode* phi = cast<PHINode>(USE);
+    unsigned NumPHIValues = phi->getNumIncomingValues();
+    for (unsigned i = 0; i != NumPHIValues; ++i) {
+      Value *InVal = phi->getIncomingValue(i);
+      if( InVal == DEF ) {
+        EndBlocks.insert(phi->getIncomingBlock(i));
+      }
+    }
+  } else {
+    // If use is not in PHINode, Endblocks should be the blocks contains the use.
+    EndBlocks.insert(UseBlock);
+  }
+
+
+  if (SpBlock == UseBlock) {
+    // The same block case is special because it's the only time we're looking
+    // within a single block to see which instruction comes first. Once we
+    // start looking at multiple blocks, the first instruction of the block is
+    // reachable, so we only need to determine reachability between whole
+    // blocks.
+
+    // Linear scan, start at safepoint, see whether we hit use or the end first.
+    for (BasicBlock::const_iterator I = SP, E = SpBlock->end(); I != E; ++I) {
+      if (&*I == USE)
+        return true;
+    }
+
+    // If def is also in the same basicblock as safepoint and use (def must be before safepoint and use (when use is not a PHINode, and PHINode need to be treat specially) as it dominates them)
+    // In the case, we know use occurs before safepoint (or it will be returned in the case above),
+    // therefore safepoint can only reach use via a backedge to the begining of this basicblock and therefore has to pass def.
+    if (!DefIsArg && DefBlock == UseBlock) {
+        if (!isa<PHINode>(USE)) {
+          return false;
+        }
+#ifdef OPTIMIZED_LIVENESS_ANALYSIS
+        else { // If use is a PHINode, it should be at the beginning of the basicblock, we need to treat it specially and see if we reach the use via its incoming block
+          // this is fastpath to see if there is a backedge directly from the current basicblock
+          // and if it's the path of the use in PhiNode
+          if (EndBlocks.find(SpBlock) != EndBlocks.end())
+            return true;
+        }
+#endif
+    }
+
+    // Can't be in a loop if it's the entry block -- the entry block may not
+    // have predecessors.
+    if (SpBlock == &SpBlock->getParent()->getEntryBlock()) {
+      assert((DefIsArg || DefBlock == SpBlock) && "Def does not dominate safepoint!");
+      return false;
+    }
+    // Otherwise, continue doing the normal per-BB CFG walk.
+    Worklist.append(succ_begin(SpBlock), succ_end(SpBlock));
+
+    if (Worklist.empty()) {
+      // We've proven that there's no path!
+      return false;
+    }
+  } else {
+    Worklist.push_back(SpBlock);
+  }
+
+  // If def use are in the same basicblock, and safepoint is in another basicblock
+  // it's obvious that safepoint has to pass def before reaching use in the block containing both the def and use unless use is a PHINode.
+  if (!DefIsArg && DefBlock == UseBlock) {
+    if (!isa<PHINode>(USE)) {
+      return false;
+    } // If use is PHINode we cannot simply return true, we need to check if we pass the incoming block of the specific use in the PHINode
+  }
+
+  // This fastpath should only work if use is not in PHINode, otherwise we need to be path sensitive and can not rely on the fact
+  // the safepoint block dominates all the other blocks.
+#ifdef OPTIMIZED_LIVENESS_ANALYSIS
+  // EntryBlock should dominate all blocks including the useblock,
+  // also def dominates safepoint and therefore they should be in the same block or def is an argument
+  if (SpBlock == &SpBlock->getParent()->getEntryBlock() && !isa<PHINode>(USE)) {
+    assert((DefIsArg || DefBlock == SpBlock) && "Def does not dominate safepoint!");
+    return true;
+  }
+#endif
+
+  // The opposite as above if use is in the entryblock
+  if (UseBlock == &SpBlock->getParent()->getEntryBlock()) {
+    assert((DefIsArg || DefBlock == UseBlock) && "Def does not dominate use!");
+    return false;
+  }
+
+  // When the stop block is unreachable, it's dominated from everywhere,
+  // regardless of whether there's a path between the two blocks.
+  if (DT && !DT->isReachableFromEntry(UseBlock))
+    DT = 0;
+
+  // This fastpath should only work if use is not in PHINode, otherwise we need to be path sensitive and can not rely on the fact
+  // the safepoint block dominates all the other blocks.
+#ifdef OPTIMIZED_LIVENESS_ANALYSIS
+  // If safepoint dominates use (def should always dominate safepoint), we cannot reach use via def.
+  if (DT && DT->dominates(SP, USE) && !isa<PHINode>(USE))
+    return true;
+#endif
+
+  return isPotentiallyReachableInnerNotViaDef(DefBlock, Worklist, SpBlock,
+                                     EndBlocks,
+                                     DT, LI);
+}
+

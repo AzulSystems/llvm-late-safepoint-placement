@@ -468,6 +468,36 @@ def int_experimental_patchpoint_i64 : Intrinsic<[llvm_i64_ty],
                                                  llvm_ptr_ty, llvm_i32_ty,
                                                  llvm_vararg_ty]>;
 
+
+// token* statepoint(target_func, #args, Flags, bci, #stack, #locals, #monitors, values...)
+// Encodes a call with the associated safepoint (both gc and deopt).  The
+// values list includes both the actual call arguments,  all state needed
+// to deopt to interpreter and all pointers needed for safepoint by GC.
+// The GC values are listed once, but may be used as base pointers 
+// (indicated by gc_relocates) multiple times.
+// Note: All the flags on the call to the statepoint are those which will 
+// be applied to the call itself.  (e.g. calling convention, etc.)
+// Currently, the 'flags' is simply an enum which represents the GC safepoint type
+def int_statepoint : Intrinsic<[llvm_i32_ty], //token 
+                               [llvm_anyptr_ty, llvm_i32_ty, //func ptr, num arguments 
+                                llvm_i32_ty, llvm_i32_ty, // flags, bci
+                                llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, // # deopt fields
+                                llvm_vararg_ty], // value list (args..., deopt..., gc...)
+                               [Throws]>; //in general case, can throw
+
+// <ty> gc_result(token)
+// Given a token from a statepoint node, return the result of the original
+// call instruction.  There doesn't appear to be a generic form which works
+// for all types, so we need several different flavors to support all of Java
+def int_gc_result_int : Intrinsic<[llvm_anyint_ty], [llvm_i32_ty]>;
+def int_gc_result_float : Intrinsic<[llvm_anyfloat_ty], [llvm_i32_ty]>;
+def int_gc_result_ptr : Intrinsic<[llvm_anyptr_ty], [llvm_i32_ty]>;
+
+// i8* gc_relocate(token, base ptr, derived ptr)
+// both are unrelocated values, base may equal derived
+// the integer is an offset into the var args list of the preceeding statepoint.  This is to avoid rematerialization of the same value for two different uses via CodeGenPrepare
+def int_gc_relocate : Intrinsic<[llvm_anyptr_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty]>;
+
 //===-------------------------- Other Intrinsics --------------------------===//
 //
 def int_flt_rounds : Intrinsic<[llvm_i32_ty]>,
