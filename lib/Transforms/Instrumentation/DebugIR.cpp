@@ -586,7 +586,12 @@ bool DebugIR::runOnModule(Module &M) {
   DebugMetadataRemover::process(M, !ParsedPath);
 
   std::unique_ptr<Module> DisplayM;
-  createDebugInfo(M, DisplayM);
+  // CHANGE BEGIN: we'd like to be able to run createDebugIRPass with
+  // MCJIT.  createDebugIRPass emits debug information that generates
+  // some DWARF info that MCJIT can't handle.
+  // FIXME: There should be a better solution here
+  if (false) { createDebugInfo(M, DisplayM); }
+  // END CHANGE
   if (WriteSourceToDisk) {
     Module *OutputM = DisplayM.get() ? DisplayM.get() : &M;
     writeDebugBitcode(OutputM, fd.get());

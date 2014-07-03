@@ -550,6 +550,9 @@ namespace llvm {
   ///
   FunctionPass *createMachineVerifierPass(const char *Banner = nullptr);
 
+  /// create Machine level safepoint verifier
+  FunctionPass *createSafepointMachineVerifierPass();
+
   /// createDwarfEHPass - This pass mulches exception handling code into a form
   /// adapted to code generation.  Required if using dwarf exception handling.
   FunctionPass *createDwarfEHPass(const TargetMachine *TM);
@@ -587,6 +590,9 @@ namespace llvm {
   /// stackmap/patchpoint intrinsics and attaches the calculated information to
   /// the intrinsic for later emission to the StackMap.
   extern char &StackMapLivenessID;
+
+  // machine instruction level safepoint verifier
+  extern char &SafepointMachineVerifierID;
 
   /// createJumpInstrTables - This pass creates jump-instruction tables.
   ModulePass *createJumpInstrTablesPass();

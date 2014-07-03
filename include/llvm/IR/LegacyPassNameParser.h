@@ -95,6 +95,8 @@ private:
   }
 };
 
+EXTERN_TEMPLATE_INSTANTIATION(class cl::parser<const PassInfo *>);
+
 ///===----------------------------------------------------------------------===//
 /// FilteredPassNameParser class - Make use of the pass registration
 /// mechanism to automatically add a command line argument to opt for

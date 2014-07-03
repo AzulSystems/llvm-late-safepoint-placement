@@ -68,6 +68,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Statepoint.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -1112,10 +1113,17 @@ void Verifier::visitFunction(const Function &F) {
 
   // If this function is actually an intrinsic, verify that it is only used in
   // direct call/invokes, never having its "address taken".
-  if (F.getIntrinsicID()) {
+  if (F.getIntrinsicID() ) {
     const User *U;
-    if (F.hasAddressTaken(&U))
-      Assert1(0, "Invalid user of intrinsic instruction!", U);
+    if (F.hasAddressTaken(&U)) {
+      bool ok = false;
+      if( const Instruction* I = dyn_cast<Instruction>(U) ) {
+        if( isStatepoint( const_cast<Instruction*>(I)) ) {
+          ok = true;
+        }
+      }
+      Assert1(ok, "Invalid user of intrinsic instruction!", U);
+    }
   }
 
   Assert1(!F.hasDLLImportStorageClass() ||
@@ -2207,11 +2215,14 @@ void Verifier::visitInstruction(Instruction &I) {
     if (Function *F = dyn_cast<Function>(I.getOperand(i))) {
       // Check to make sure that the "address of" an intrinsic function is never
       // taken.
-      Assert1(!F->isIntrinsic() || i == (isa<CallInst>(I) ? e-1 : 0),
-              "Cannot take the address of an intrinsic!", &I);
-      Assert1(!F->isIntrinsic() || isa<CallInst>(I) ||
-              F->getIntrinsicID() == Intrinsic::donothing,
-              "Cannot invoke an intrinsinc other than donothing", &I);
+      if( !isStatepoint(&I) ) {
+        // TODO: this is a hack at the moment, generalize
+        Assert1(!F->isIntrinsic() || i == (isa<CallInst>(I) ? e-1 : 0),
+                "Cannot take the address of an intrinsic!", &I);
+        Assert1(!F->isIntrinsic() || isa<CallInst>(I) ||
+                F->getIntrinsicID() == Intrinsic::donothing,
+                "Cannot invoke an intrinsinc other than donothing", &I);
+      }
       Assert1(F->getParent() == M, "Referencing function in another module!",
               &I);
     } else if (BasicBlock *OpBB = dyn_cast<BasicBlock>(I.getOperand(i))) {
@@ -2529,7 +2540,97 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     Assert1(isa<ConstantInt>(CI.getArgOperand(1)),
             "llvm.invariant.end parameter #2 must be a constant integer", &CI);
     break;
+ 
+  case Intrinsic::statepoint: {
+    assert(CI.getNumArgOperands() >= 7 && "Must have leading arguments");
+    int Flags = cast<ConstantInt>(CI.getArgOperand(2))->getZExtValue();
+    Assert1( Flags == 0, "flags not implemented", &CI);
+
+    for (Value::user_iterator I = CI.user_begin(), E = CI.user_end();
+         I != E;
+         ++I) {
+      const CallInst* gcRelocCall = cast<const CallInst>(*I);
+      const Function *gcRelocFn = gcRelocCall->getCalledFunction();
+      Assert1(gcRelocFn && gcRelocFn->isDeclaration() &&
+              (gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_int ||
+               gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_float ||
+               gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_ptr ||
+               gcRelocFn->getIntrinsicID() == Intrinsic::gc_relocate),
+              "gc.result or gc.result are the only value uses of statepoint", &CI);
+      if( gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_int ||
+          gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_float ||
+          gcRelocFn->getIntrinsicID() == Intrinsic::gc_result_ptr ) {
+        Assert1(gcRelocCall->getNumArgOperands() == 1, "wrong number of arguments", &CI);
+        Assert2(gcRelocCall->getArgOperand(0) == &CI, "connected to wrong statepoint", &CI, gcRelocCall);
+      } else if( gcRelocFn->getIntrinsicID() == Intrinsic::gc_relocate) {
+        Assert1(gcRelocCall->getNumArgOperands() == 3, "wrong number of arguments", &CI);
+        Assert2(gcRelocCall->getArgOperand(0) == &CI, "connected to wrong statepoint", &CI, gcRelocCall);
+
+        // Note: It is legal for a single derived pointer to be listed multiple
+        // times.  It's non-optimal, but it is legal.  It can also happen after
+        // insertion if we strip a bitcast away.
+      } else {
+        llvm_unreachable("unsupported use type - how'd we get past the assert?");
+      }
+    }
+
+    // Note: It is really tempting to check that each base is relocated and
+    // that a derived pointer is never reused as a base pointer.  This turns
+    // out to be problematic since optimizations run after safepoint insertion
+    // can recognize equality properties that the insertion logic doesn't know
+    // about.  See example statepoint.ll in the verifier subdirectory
+    break;
   }
+  case Intrinsic::gc_result_int:
+  case Intrinsic::gc_result_float:
+  case Intrinsic::gc_result_ptr: {
+    Assert1(CI.getNumArgOperands() == 1, "wrong number of arguments", &CI);
+
+    // Are we tied to a statepoint properly?
+    CallSite StatepointCS(CI.getArgOperand(0));
+    const Function *spFn = StatepointCS.getCalledFunction();
+    Assert2(spFn && spFn->isDeclaration() &&
+            spFn->getIntrinsicID() == Intrinsic::statepoint,
+            "token must be from a statepoint", &CI, CI.getArgOperand(0));
+    break;
+  }
+  case Intrinsic::gc_relocate: {
+    // Some checks to ensure gc.relocate has the correct set of
+    // parameters.  TODO: we can make these tests much stricter.
+    Assert1(CI.getNumArgOperands() == 3, "wrong number of arguments", &CI);
+
+    // Are we tied to a statepoint properly?
+    CallSite StatepointCS(CI.getArgOperand(0));
+    const Function *spFn =
+        StatepointCS.getInstruction() ? StatepointCS.getCalledFunction() : NULL;
+    Assert2(spFn && spFn->isDeclaration() &&
+            spFn->getIntrinsicID() == Intrinsic::statepoint,
+            "token must be from a statepoint", &CI, CI.getArgOperand(0));
+
+    // Both the base and derived must be piped through the safepoint
+    Value* base = CI.getArgOperand(1);
+    Assert1( isa<ConstantInt>(base), "must be integer offset", &CI);
+    
+    Value* derived = CI.getArgOperand(2);
+    Assert1( isa<ConstantInt>(derived), "must be integer offset", &CI);
+
+    GCRelocateOperands ops( &CI );
+    // Check the bounds
+    Assert1( 0 <= ops.basePtrIndex() &&
+             ops.basePtrIndex() < StatepointCS.arg_size(),
+             "index out of bounds", &CI);
+    Assert1( 0 <= ops.derivedPtrIndex() &&
+             ops.derivedPtrIndex() < StatepointCS.arg_size(),
+             "index out of bounds", &CI);
+
+    // Should only be relocating pointer types
+    Assert2( isGCPointerType( ops.basePtr()->getType() ),
+             "relocating non gc base pointer?", &CI, ops.basePtr() );
+    Assert2( isGCPointerType( ops.derivedPtr()->getType() ),
+             "relocating non gc derived pointer?", &CI, ops.derivedPtr() );
+    break;
+  }
+  };
 }
 
 void DebugInfoVerifier::verifyDebugInfo() {

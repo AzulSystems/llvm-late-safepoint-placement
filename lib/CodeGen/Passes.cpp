@@ -80,6 +80,8 @@ static cl::opt<bool> PrintGCInfo("print-gc", cl::Hidden,
 static cl::opt<bool> VerifyMachineCode("verify-machineinstrs", cl::Hidden,
     cl::desc("Verify generated machine code"),
     cl::init(getenv("LLVM_VERIFY_MACHINEINSTRS")!=nullptr));
+static cl::opt<bool> VerifySafepointMachineCode("verify-safepoint-machineinstrs", cl::Hidden,
+    cl::desc("Verify safepoint machine code"));
 static cl::opt<std::string>
 PrintMachineInstrs("print-machineinstrs", cl::ValueOptional,
                    cl::desc("Print machine instrs"),
@@ -566,6 +568,10 @@ void TargetPassConfig::addMachinePasses() {
 
 /// Add passes that optimize machine instructions in SSA form.
 void TargetPassConfig::addMachineSSAOptimization() {
+  if (VerifySafepointMachineCode)
+    addPass(&SafepointMachineVerifierID);
+
+
   // Pre-ra tail duplication.
   if (addPass(&EarlyTailDuplicateID))
     printAndVerify("After Pre-RegAlloc TailDuplicate");
@@ -602,6 +608,9 @@ void TargetPassConfig::addMachineSSAOptimization() {
 
   addPass(&PeepholeOptimizerID);
   printAndVerify("After codegen peephole optimization pass");
+
+  if (VerifySafepointMachineCode)
+    addPass(&SafepointMachineVerifierID);
 }
 
 //===---------------------------------------------------------------------===//

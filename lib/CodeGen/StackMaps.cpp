@@ -192,7 +192,9 @@ StackMaps::parseRegisterLiveOutMask(const uint32_t *Mask) const {
 void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
                                     MachineInstr::const_mop_iterator MOI,
                                     MachineInstr::const_mop_iterator MOE,
-                                    bool recordResult) {
+                                    bool recordResult,
+                                    const CalleePairVecTy* callee_pairs) {
+
 
   MCContext &OutContext = AP.OutStreamer.getContext();
   MCSymbol *MILabel = OutContext.CreateTempSymbol();
@@ -232,12 +234,16 @@ void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
     MCSymbolRefExpr::Create(AP.CurrentFnSym, OutContext),
     OutContext);
 
-  CSInfos.push_back(CallsiteInfo(CSOffsetExpr, ID, Locations, LiveOuts));
+  CSInfos.push_back(CallsiteInfo(CSOffsetExpr, ID, Locations, LiveOuts,
+                                 callee_pairs ? *callee_pairs : CalleePairVecTy()) );
 
   // Record the stack size of the current function.
   const MachineFrameInfo *MFI = AP.MF->getFrameInfo();
+  const TargetRegisterInfo *RegInfo = AP.MF->getTarget().getRegisterInfo();
+  const bool DynamicFrameSize = MFI->hasVarSizedObjects() ||
+    RegInfo->needsStackRealignment(*(AP.MF));
   FnStackSize[AP.CurrentFnSym] =
-    MFI->hasVarSizedObjects() ? UINT64_MAX : MFI->getStackSize();
+    DynamicFrameSize ? UINT64_MAX : MFI->getStackSize();
 }
 
 void StackMaps::recordStackMap(const MachineInstr &MI) {
@@ -347,6 +353,13 @@ void StackMaps::emitConstantPoolEntries(MCStreamer &OS) {
 ///     uint8  : Reserved
 ///     uint8  : Size in Bytes
 ///   }
+///   CHANGE BEGIN
+///   uint16 : NumCalleeSave
+///   [NumCalleSave] {
+///     uint16 : Dwarf RegNum
+///     int32  : Offset
+///   }
+///   CHANGE END
 ///   uint32 : Padding (only if required to align to 8 byte)
 /// }
 ///
@@ -467,6 +480,17 @@ void StackMaps::emitCallsiteEntries(MCStreamer &OS,
       OS.EmitIntValue(0, 1);
       OS.EmitIntValue(LO.Size, 1);
     }
+
+    // CHANGE BEGIN
+    OS.EmitIntValue(CSI.CalleePairs.size(), 2);
+    for( int i = 0; i < CSI.CalleePairs.size(); i++ ) {
+      const std::pair<unsigned, int64_t>& pair = CSI.CalleePairs[i];
+      OS.EmitIntValue(pair.first, 2);
+      OS.EmitIntValue(pair.second, 4);
+    }
+    // CHANGE END
+
+    
     // Emit alignment to 8 byte.
     OS.EmitValueToAlignment(8);
   }
@@ -501,6 +525,11 @@ void StackMaps::serializeToStackMapSection() {
   emitFunctionFrameRecords(OS);
   emitConstantPoolEntries(OS);
   emitCallsiteEntries(OS, TRI);
+
+  // CHANGE - emit a footer value so we can confirm we parsed the section correctly
+  AP.OutStreamer.EmitIntValue(0x12345678, 8);
+  // END CHANGE
+  
   OS.AddBlankLine();
 
   // Clean up.
