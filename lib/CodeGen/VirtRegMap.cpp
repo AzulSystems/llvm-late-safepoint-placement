@@ -16,12 +16,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "regalloc"
 #include "llvm/CodeGen/VirtRegMap.h"
 #include "LiveDebugVariables.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SparseSet.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LiveIntervalAnalysis.h"
 #include "llvm/CodeGen/LiveStackAnalysis.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -39,6 +38,8 @@
 #include "llvm/Target/TargetRegisterInfo.h"
 #include <algorithm>
 using namespace llvm;
+
+#define DEBUG_TYPE "regalloc"
 
 STATISTIC(NumSpillSlots, "Number of spill slots allocated");
 STATISTIC(NumIdCopies,   "Number of identity moves eliminated after rewriting");
@@ -169,9 +170,9 @@ public:
   static char ID;
   VirtRegRewriter() : MachineFunctionPass(ID) {}
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const;
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
 
-  virtual bool runOnMachineFunction(MachineFunction&);
+  bool runOnMachineFunction(MachineFunction&) override;
 };
 } // end anonymous namespace
 
@@ -278,6 +279,11 @@ void VirtRegRewriter::rewrite() {
   PhysRegs.clear();
   PhysRegs.setUniverse(TRI->getNumRegs());
 
+  // The function with uwtable should guarantee that the stack unwinder
+  // can unwind the stack to the previous frame.  Thus, we can't apply the
+  // noreturn optimization if the caller function has uwtable attribute.
+  bool HasUWTable = MF->getFunction()->hasFnAttribute(Attribute::UWTable);
+
   for (MachineFunction::iterator MBBI = MF->begin(), MBBE = MF->end();
        MBBI != MBBE; ++MBBI) {
     DEBUG(MBBI->print(dbgs(), Indexes));
@@ -287,9 +293,12 @@ void VirtRegRewriter::rewrite() {
       MachineInstr *MI = MII;
       ++MII;
 
-      // Check if this instruction is a call to a noreturn function.
-      // If so, all the definitions set by this instruction can be ignored.
-      if (IsExitBB && MI->isCall())
+      // Check if this instruction is a call to a noreturn function.  If this
+      // is a call to noreturn function and we don't need the stack unwinding
+      // functionality (i.e. this function does not have uwtable attribute and
+      // the callee function has the nounwind attribute), then we can ignore
+      // the definitions set by this instruction.
+      if (!HasUWTable && IsExitBB && MI->isCall()) {
         for (MachineInstr::mop_iterator MOI = MI->operands_begin(),
                MOE = MI->operands_end(); MOI != MOE; ++MOI) {
           MachineOperand &MO = *MOI;
@@ -305,6 +314,7 @@ void VirtRegRewriter::rewrite() {
           NoReturnInsts.insert(MI);
           break;
         }
+      }
 
       for (MachineInstr::mop_iterator MOI = MI->operands_begin(),
            MOE = MI->operands_end(); MOI != MOE; ++MOI) {
@@ -409,10 +419,8 @@ void VirtRegRewriter::rewrite() {
       // Check if this register has a use that will impact the rest of the
       // code. Uses in debug and noreturn instructions do not impact the
       // generated code.
-      for (MachineRegisterInfo::reg_nodbg_iterator It =
-             MRI->reg_nodbg_begin(Reg),
-             EndIt = MRI->reg_nodbg_end(); It != EndIt; ++It) {
-        if (!NoReturnInsts.count(&(*It))) {
+      for (MachineInstr &It : MRI->reg_nodbg_instructions(Reg)) {
+        if (!NoReturnInsts.count(&It)) {
           MRI->setPhysRegUsed(Reg);
           break;
         }

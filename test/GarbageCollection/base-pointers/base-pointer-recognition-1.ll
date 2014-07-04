@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-call-safepoints -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-safepoints -spp-no-backedge -spp-no-entry -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
 
 ; CHECK: derived %merged_value base %base_phi
 

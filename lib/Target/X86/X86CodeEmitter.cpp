@@ -12,7 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "x86-emitter"
 #include "X86.h"
 #include "X86InstrInfo.h"
 #include "X86JITInfo.h"
@@ -36,6 +35,8 @@
 #include "llvm/Target/TargetOptions.h"
 using namespace llvm;
 
+#define DEBUG_TYPE "x86-emitter"
+
 STATISTIC(NumEmitted, "Number of machine instructions emitted");
 
 namespace {
@@ -52,13 +53,13 @@ namespace {
   public:
     static char ID;
     explicit Emitter(X86TargetMachine &tm, CodeEmitter &mce)
-      : MachineFunctionPass(ID), II(0), TD(0), TM(tm),
+      : MachineFunctionPass(ID), II(nullptr), TD(nullptr), TM(tm),
         MCE(mce), PICBaseOffset(0), Is64BitMode(false),
         IsPIC(TM.getRelocationModel() == Reloc::PIC_) {}
 
-    bool runOnMachineFunction(MachineFunction &MF);
+    bool runOnMachineFunction(MachineFunction &MF) override;
 
-    virtual const char *getPassName() const {
+    const char *getPassName() const override {
       return "X86 Machine Code Emitter";
     }
 
@@ -76,7 +77,7 @@ namespace {
 
     void emitInstruction(MachineInstr &MI, const MCInstrDesc *Desc);
 
-    void getAnalysisUsage(AnalysisUsage &AU) const {
+    void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();
       AU.addRequired<MachineModuleInfo>();
       MachineFunctionPass::getAnalysisUsage(AU);
@@ -143,7 +144,7 @@ bool Emitter<CodeEmitter>::runOnMachineFunction(MachineFunction &MF) {
       MCE.StartMachineBasicBlock(MBB);
       for (MachineBasicBlock::iterator I = MBB->begin(), E = MBB->end();
            I != E; ++I) {
-        const MCInstrDesc &Desc = I->getDesc();        
+        const MCInstrDesc &Desc = I->getDesc();
         emitInstruction(*I, &Desc);
         // MOVPC32r is basically a call plus a pop instruction.
         if (Desc.getOpcode() == X86::MOVPC32r)
@@ -450,7 +451,7 @@ void Emitter<CodeEmitter>::emitMemModRMByte(const MachineInstr &MI,
                                             intptr_t PCAdj) {
   const MachineOperand &Op3 = MI.getOperand(Op+3);
   int DispVal = 0;
-  const MachineOperand *DispForReloc = 0;
+  const MachineOperand *DispForReloc = nullptr;
 
   // Figure out what sort of displacement we have to handle here.
   if (Op3.isGlobal()) {
@@ -1115,10 +1116,16 @@ void Emitter<CodeEmitter>::emitInstruction(MachineInstr &MI,
     case TargetOpcode::INLINEASM:
       // We allow inline assembler nodes with empty bodies - they can
       // implicitly define registers, which is ok for JIT.
-      if (MI.getOperand(0).getSymbolName()[0])
+      if (MI.getOperand(0).getSymbolName()[0]) {
+        DebugLoc DL = MI.getDebugLoc();
+        DL.print(MI.getParent()->getParent()->getFunction()->getContext(),
+                 llvm::errs());
         report_fatal_error("JIT does not support inline asm!");
+      }
       break;
-    case TargetOpcode::PROLOG_LABEL:
+    case TargetOpcode::DBG_VALUE:
+    case TargetOpcode::CFI_INSTRUCTION:
+      break;
     case TargetOpcode::GC_LABEL:
     case TargetOpcode::EH_LABEL:
       MCE.emitLabel(MI.getOperand(0).getMCSymbol());
@@ -1127,6 +1134,16 @@ void Emitter<CodeEmitter>::emitInstruction(MachineInstr &MI,
     case TargetOpcode::IMPLICIT_DEF:
     case TargetOpcode::KILL:
       break;
+
+    case X86::SEH_PushReg:
+    case X86::SEH_SaveReg:
+    case X86::SEH_SaveXMM:
+    case X86::SEH_StackAlloc:
+    case X86::SEH_SetFrame:
+    case X86::SEH_PushFrame:
+    case X86::SEH_EndPrologue:
+      break;
+
     case X86::MOVPC32r: {
       // This emits the "call" portion of this pseudo instruction.
       MCE.emitByte(BaseOpcode);
@@ -1477,7 +1494,7 @@ void Emitter<CodeEmitter>::emitInstruction(MachineInstr &MI,
 #ifndef NDEBUG
     dbgs() << "Cannot encode all operands of: " << MI << "\n";
 #endif
-    llvm_unreachable(0);
+    llvm_unreachable(nullptr);
   }
 
   MCE.processDebugLoc(MI.getDebugLoc(), false);

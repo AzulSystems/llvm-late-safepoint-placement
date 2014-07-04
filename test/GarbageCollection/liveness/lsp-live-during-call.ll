@@ -1,4 +1,4 @@
-; RUN:  opt %s -place-call-safepoints -spp-print-liveset -spp-all-functions -S 2>&1 | FileCheck %s
+; RUN:  opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-print-liveset -spp-all-functions -S 2>&1 | FileCheck %s
 
 ; We're looking to make sure both objs show up as live appropriately even though
 ; there's no use after the call site

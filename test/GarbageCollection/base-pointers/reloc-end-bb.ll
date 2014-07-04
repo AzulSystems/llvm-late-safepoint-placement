@@ -1,4 +1,4 @@
-; RUN: opt %s -place-backedge-safepoints -place-call-safepoints  -spp-all-functions -S  2>&1 | FileCheck %s
+; RUN: opt %s -spp-no-entry -place-safepoints  -spp-all-functions -S  2>&1 | FileCheck %s
 
 ; This case is testing for an edge case bug that caused a crash in
 ; findCurrentRelocationForBase.  The issue was that a safepoint

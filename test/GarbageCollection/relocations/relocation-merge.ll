@@ -1,4 +1,4 @@
-; RUN: opt %s -place-call-safepoints -spp-all-functions -S 2>&1 | FileCheck %s
+; RUN: opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-all-functions -S 2>&1 | FileCheck %s
 
 %jObject = type { [8 x i8] }
 

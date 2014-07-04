@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-call-safepoints -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -spp-no-entry -spp-no-backedge -place-safepoints -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
 
 ; CHECK: derived %merged_value base %base_phi
 
@@ -20,7 +20,7 @@ there:
 
 merge:
 ; CHECK: merge:
-; CHECK-NEXT:  %base_phi = phi i64* [ %base_obj_x, %bump ], [ %base_obj_y, %there ]
+; CHECK:  %base_phi = phi i64* [ %base_obj_x, %bump ], [ %base_obj_y, %there ]
 ; CHECK-NEXT:  %merged_value = phi i64* [ %base_obj_x, %bump ], [ %y, %there ]  
   %merged_value = phi i64* [ %base_obj_x, %bump ], [ %y, %there ]
 

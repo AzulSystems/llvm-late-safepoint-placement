@@ -31,7 +31,7 @@ SystemZTargetMachine::SystemZTargetMachine(const Target &T, StringRef TT,
     // so that we can refer to it using LARL.  We don't have any special
     // requirements for stack variables though.
     DL("E-m:e-i1:8:16-i8:8:16-i64:64-f128:64-a:8:16-n32:64"),
-    InstrInfo(*this), TLInfo(*this), TSInfo(*this),
+    InstrInfo(Subtarget), TLInfo(*this), TSInfo(DL),
     FrameLowering(*this, Subtarget) {
   initAsmInfo();
 }
@@ -47,10 +47,10 @@ public:
     return getTM<SystemZTargetMachine>();
   }
 
-  virtual void addIRPasses() LLVM_OVERRIDE;
-  virtual bool addInstSelector() LLVM_OVERRIDE;
-  virtual bool addPreSched2() LLVM_OVERRIDE;
-  virtual bool addPreEmitPass() LLVM_OVERRIDE;
+  void addIRPasses() override;
+  bool addInstSelector() override;
+  bool addPreSched2() override;
+  bool addPreEmitPass() override;
 };
 } // end anonymous namespace
 
@@ -65,7 +65,8 @@ bool SystemZPassConfig::addInstSelector() {
 }
 
 bool SystemZPassConfig::addPreSched2() {
-  if (getSystemZTargetMachine().getSubtargetImpl()->hasLoadStoreOnCond())
+  if (getOptLevel() != CodeGenOpt::None &&
+      getSystemZTargetMachine().getSubtargetImpl()->hasLoadStoreOnCond())
     addPass(&IfConverterID);
   return true;
 }

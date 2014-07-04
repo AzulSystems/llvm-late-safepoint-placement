@@ -30,11 +30,6 @@
 
 using namespace llvm;
 
-namespace llvm {
-extern cl::opt<bool> EnableStackMapLiveness;
-extern cl::opt<bool> EnablePatchPointLiveness;
-}
-
 static cl::opt<bool> DisablePostRA("disable-post-ra", cl::Hidden,
     cl::desc("Disable Post Regalloc"));
 static cl::opt<bool> DisableBranchFold("disable-branch-fold", cl::Hidden,
@@ -84,7 +79,9 @@ static cl::opt<bool> PrintGCInfo("print-gc", cl::Hidden,
     cl::desc("Dump garbage collector data"));
 static cl::opt<bool> VerifyMachineCode("verify-machineinstrs", cl::Hidden,
     cl::desc("Verify generated machine code"),
-    cl::init(getenv("LLVM_VERIFY_MACHINEINSTRS")!=NULL));
+    cl::init(getenv("LLVM_VERIFY_MACHINEINSTRS")!=nullptr));
+static cl::opt<bool> VerifySafepointMachineCode("verify-safepoint-machineinstrs", cl::Hidden,
+    cl::desc("Verify safepoint machine code"));
 static cl::opt<std::string>
 PrintMachineInstrs("print-machineinstrs", cl::ValueOptional,
                    cl::desc("Print machine instrs"),
@@ -92,9 +89,9 @@ PrintMachineInstrs("print-machineinstrs", cl::ValueOptional,
 
 // Temporary option to allow experimenting with MachineScheduler as a post-RA
 // scheduler. Targets can "properly" enable this with
-// substitutePass(&PostRASchedulerID, &MachineSchedulerID); Ideally it wouldn't
-// be part of the standard pass pipeline, and the target would just add a PostRA
-// scheduling pass wherever it wants.
+// substitutePass(&PostRASchedulerID, &PostMachineSchedulerID); Ideally it
+// wouldn't be part of the standard pass pipeline, and the target would just add
+// a PostRA scheduling pass wherever it wants.
 static cl::opt<bool> MISchedPostRA("misched-postra", cl::Hidden,
   cl::desc("Run MachineScheduler post regalloc (independent of preRA sched)"));
 
@@ -126,7 +123,7 @@ static IdentifyingPassPtr applyOverride(IdentifyingPassPtr TargetID,
   case cl::BOU_TRUE:
     if (TargetID.isValid())
       return TargetID;
-    if (StandardID == 0)
+    if (StandardID == nullptr)
       report_fatal_error("Target cannot enable pass");
     return StandardID;
   case cl::BOU_FALSE:
@@ -232,8 +229,8 @@ TargetPassConfig::~TargetPassConfig() {
 // Out of line constructor provides default values for pass options and
 // registers all common codegen passes.
 TargetPassConfig::TargetPassConfig(TargetMachine *tm, PassManagerBase &pm)
-  : ImmutablePass(ID), PM(&pm), StartAfter(0), StopAfter(0),
-    Started(true), Stopped(false), TM(tm), Impl(0), Initialized(false),
+  : ImmutablePass(ID), PM(&pm), StartAfter(nullptr), StopAfter(nullptr),
+    Started(true), Stopped(false), TM(tm), Impl(nullptr), Initialized(false),
     DisableVerify(false),
     EnableTailMerge(true) {
 
@@ -274,7 +271,7 @@ TargetPassConfig *LLVMTargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 TargetPassConfig::TargetPassConfig()
-  : ImmutablePass(ID), PM(0) {
+  : ImmutablePass(ID), PM(nullptr) {
   llvm_unreachable("TargetPassConfig should not be constructed on-the-fly");
 }
 
@@ -332,7 +329,7 @@ AnalysisID TargetPassConfig::addPass(AnalysisID PassID) {
   IdentifyingPassPtr TargetID = getPassSubstitution(PassID);
   IdentifyingPassPtr FinalPtr = overridePass(PassID, TargetID);
   if (!FinalPtr.isValid())
-    return 0;
+    return nullptr;
 
   Pass *P;
   if (FinalPtr.isInstance())
@@ -384,8 +381,10 @@ void TargetPassConfig::addIRPasses() {
 
   // Before running any passes, run the verifier to determine if the input
   // coming from the front-end and/or optimizer is valid.
-  if (!DisableVerify)
+  if (!DisableVerify) {
     addPass(createVerifierPass());
+    addPass(createDebugInfoVerifierPass());
+  }
 
   // Run loop strength reduction before anything else.
   if (getOptLevel() != CodeGenOpt::None && !DisableLSR) {
@@ -419,11 +418,11 @@ void TargetPassConfig::addPassesToHandleExceptions() {
     // FALLTHROUGH
   case ExceptionHandling::DwarfCFI:
   case ExceptionHandling::ARM:
-  case ExceptionHandling::Win64:
+  case ExceptionHandling::WinEH:
     addPass(createDwarfEHPass(TM));
     break;
   case ExceptionHandling::None:
-    addPass(createLowerInvokePass(TM));
+    addPass(createLowerInvokePass());
 
     // The lower invoke pass may create unreachable code. Remove it.
     addPass(createUnreachableBlockEliminationPass());
@@ -442,6 +441,12 @@ void TargetPassConfig::addCodeGenPrepare() {
 /// instruction selection.
 void TargetPassConfig::addISelPrepare() {
   addPreISel();
+
+  // Need to verify DebugInfo *before* creating the stack protector analysis.
+  // It's a function pass, and verifying between it and its users causes a
+  // crash.
+  if (!DisableVerify)
+    addPass(createDebugInfoVerifierPass());
 
   addPass(createStackProtectorPass(TM));
 
@@ -558,12 +563,15 @@ void TargetPassConfig::addMachinePasses() {
   if (addPreEmitPass())
     printAndVerify("After PreEmit passes");
 
-  if (EnableStackMapLiveness || EnablePatchPointLiveness)
-    addPass(&StackMapLivenessID);
+  addPass(&StackMapLivenessID);
 }
 
 /// Add passes that optimize machine instructions in SSA form.
 void TargetPassConfig::addMachineSSAOptimization() {
+  if (VerifySafepointMachineCode)
+    addPass(&SafepointMachineVerifierID);
+
+
   // Pre-ra tail duplication.
   if (addPass(&EarlyTailDuplicateID))
     printAndVerify("After Pre-RegAlloc TailDuplicate");
@@ -600,6 +608,9 @@ void TargetPassConfig::addMachineSSAOptimization() {
 
   addPass(&PeepholeOptimizerID);
   printAndVerify("After codegen peephole optimization pass");
+
+  if (VerifySafepointMachineCode)
+    addPass(&SafepointMachineVerifierID);
 }
 
 //===---------------------------------------------------------------------===//
@@ -620,7 +631,7 @@ MachinePassRegistry RegisterRegAlloc::Registry;
 
 /// A dummy default pass factory indicates whether the register allocator is
 /// overridden on the command line.
-static FunctionPass *useDefaultRegisterAllocator() { return 0; }
+static FunctionPass *useDefaultRegisterAllocator() { return nullptr; }
 static RegisterRegAlloc
 defaultRegAlloc("default",
                 "pick register allocator based on -O option",

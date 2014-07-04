@@ -33,15 +33,19 @@ class XCoreFunctionInfo : public MachineFunctionInfo {
   int FPSpillSlot;
   bool EHSpillSlotSet;
   int EHSpillSlot[2];
+  unsigned ReturnStackOffset;
+  bool ReturnStackOffsetSet;
   int VarArgsFrameIndex;
   mutable int CachedEStackSize;
-  std::vector<std::pair<MCSymbol*, CalleeSavedInfo> > SpillLabels;
+  std::vector<std::pair<MachineBasicBlock::iterator, CalleeSavedInfo>>
+  SpillLabels;
 
 public:
   XCoreFunctionInfo() :
     LRSpillSlotSet(false),
     FPSpillSlotSet(false),
     EHSpillSlotSet(false),
+    ReturnStackOffsetSet(false),
     VarArgsFrameIndex(0),
     CachedEStackSize(-1) {}
   
@@ -49,6 +53,7 @@ public:
     LRSpillSlotSet(false),
     FPSpillSlotSet(false),
     EHSpillSlotSet(false),
+    ReturnStackOffsetSet(false),
     VarArgsFrameIndex(0),
     CachedEStackSize(-1) {}
   
@@ -78,9 +83,21 @@ public:
     return EHSpillSlot;
   }
 
+  void setReturnStackOffset(unsigned value) {
+    assert(!ReturnStackOffsetSet && "Return stack offset set twice");
+    ReturnStackOffset = value;
+    ReturnStackOffsetSet = true;
+  }
+
+  unsigned getReturnStackOffset() const {
+    assert(ReturnStackOffsetSet && "Return stack offset not set");
+    return ReturnStackOffset;
+  }
+
   bool isLargeFrame(const MachineFunction &MF) const;
 
-  std::vector<std::pair<MCSymbol*, CalleeSavedInfo> > &getSpillLabels() {
+  std::vector<std::pair<MachineBasicBlock::iterator, CalleeSavedInfo>> &
+  getSpillLabels() {
     return SpillLabels;
   }
 };

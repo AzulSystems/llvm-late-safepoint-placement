@@ -16,8 +16,8 @@ namespace {
 
 TEST(TimeValue, time_t) {
   sys::TimeValue now = sys::TimeValue::now();
-  time_t now_t = time(NULL);
-  EXPECT_TRUE(abs(static_cast<long>(now_t - now.toEpochTime())) < 2);
+  time_t now_t = time(nullptr);
+  EXPECT_TRUE(std::abs(static_cast<long>(now_t - now.toEpochTime())) < 2);
 }
 
 TEST(TimeValue, Win32FILETIME) {

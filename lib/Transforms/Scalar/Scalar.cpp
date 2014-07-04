@@ -29,7 +29,6 @@ using namespace llvm;
 void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeADCEPass(Registry);
   initializeSampleProfileLoaderPass(Registry);
-  initializeCodeGenPreparePass(Registry);
   initializeConstantHoistingPass(Registry);
   initializeConstantPropagationPass(Registry);
   initializeCorrelatedValuePropagationPass(Registry);
@@ -65,11 +64,12 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeStructurizeCFGPass(Registry);
   initializeSinkingPass(Registry);
   initializeTailCallElimPass(Registry);
-  initializePlaceBackedgeSafepointsPass(Registry);
-  initializePlaceCallSafepointsPass(Registry);
-  initializePlaceEntrySafepointsPass(Registry);
+  initializePlaceBackedgeSafepointsImplPass(Registry);
+  initializePlaceSafepointsPass(Registry);
   initializeRemoveFakeVMStateCallsPass(Registry);
   initializeRemoveRedundantVMStatesPass(Registry);
+  initializeSeparateConstOffsetFromGEPPass(Registry);
+  initializeLoadCombinePass(Registry);
 }
 
 void LLVMInitializeScalarOpts(LLVMPassRegistryRef R) {
@@ -187,6 +187,7 @@ void LLVMAddDemoteMemoryToRegisterPass(LLVMPassManagerRef PM) {
 
 void LLVMAddVerifierPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createVerifierPass());
+  // FIXME: should this also add createDebugInfoVerifierPass()?
 }
 
 void LLVMAddCorrelatedValuePropagationPass(LLVMPassManagerRef PM) {

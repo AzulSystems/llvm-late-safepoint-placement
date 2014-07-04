@@ -22,10 +22,10 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
-#include "llvm/Support/system_error.h"
 #include <cctype>
 #include <cerrno>
 #include <sys/stat.h>
+#include <system_error>
 
 // <fcntl.h> may provide O_BINARY.
 #if defined(HAVE_FCNTL_H)
@@ -87,8 +87,8 @@ void raw_ostream::SetBuffered() {
 
 void raw_ostream::SetBufferAndMode(char *BufferStart, size_t Size,
                                    BufferKind Mode) {
-  assert(((Mode == Unbuffered && BufferStart == 0 && Size == 0) ||
-          (Mode != Unbuffered && BufferStart && Size)) &&
+  assert(((Mode == Unbuffered && !BufferStart && Size == 0) ||
+          (Mode != Unbuffered && BufferStart && Size != 0)) &&
          "stream must be unbuffered or have at least one byte");
   // Make sure the current buffer is free of content (we can't flush here; the
   // child buffer management logic will be in write_impl).
@@ -433,7 +433,7 @@ void format_object_base::home() {
 raw_fd_ostream::raw_fd_ostream(const char *Filename, std::string &ErrorInfo,
                                sys::fs::OpenFlags Flags)
     : Error(false), UseAtomicWrites(false), pos(0) {
-  assert(Filename != 0 && "Filename is null");
+  assert(Filename && "Filename is null");
   ErrorInfo.clear();
 
   // Handle "-" as stdout. Note that when we do this, we consider ourself
@@ -443,14 +443,14 @@ raw_fd_ostream::raw_fd_ostream(const char *Filename, std::string &ErrorInfo,
     FD = STDOUT_FILENO;
     // If user requested binary then put stdout into binary mode if
     // possible.
-    if (Flags & sys::fs::F_Binary)
+    if (!(Flags & sys::fs::F_Text))
       sys::ChangeStdoutToBinary();
     // Close stdout when we're done, to detect any output errors.
     ShouldClose = true;
     return;
   }
 
-  error_code EC = sys::fs::openFileForWrite(Filename, FD, Flags);
+  std::error_code EC = sys::fs::openFileForWrite(Filename, FD, Flags);
 
   if (EC) {
     ErrorInfo = "Error opening output file '" + std::string(Filename) + "': " +

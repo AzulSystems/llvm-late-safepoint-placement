@@ -21,6 +21,7 @@ namespace llvm {
 
 class AsmPrinter;
 class MCExpr;
+class MCStreamer;
 
 /// \brief MI-level patchpoint operands.
 ///
@@ -143,7 +144,7 @@ public:
   // OpParser.
   typedef enum { DirectMemRefOp, IndirectMemRefOp, ConstantOp } OpType;
 
-  StackMaps(AsmPrinter &AP) : AP(AP) {}
+  StackMaps(AsmPrinter &AP);
 
   /// \brief Generate a stackmap record for a stackmap instruction.
   ///
@@ -159,9 +160,11 @@ public:
   void serializeToStackMapSection();
 
 public: //HACK: exposed for our use
+  static const char *WSMP;
   typedef SmallVector<Location, 8> LocationVec;
   typedef SmallVector<LiveOutReg, 8> LiveOutVec;
-  typedef MapVector<const MCSymbol *, uint32_t> FnStackSizeMap;
+  typedef MapVector<int64_t, int64_t> ConstantPool;
+  typedef MapVector<const MCSymbol *, uint64_t> FnStackSizeMap;
 
   typedef std::vector< std::pair<unsigned, int64_t> > CalleePairVecTy;
   struct CallsiteInfo {
@@ -170,39 +173,18 @@ public: //HACK: exposed for our use
     LocationVec Locations;
     LiveOutVec LiveOuts;
     // BEGIN CHANGE
-    uint64_t FrameSize;
     CalleePairVecTy CalleePairs;
     // END CHANGE
     
-    CallsiteInfo() : CSOffsetExpr(0), ID(0) {}
+    CallsiteInfo() : CSOffsetExpr(nullptr), ID(0) {}
     CallsiteInfo(const MCExpr *CSOffsetExpr, uint64_t ID,
                  LocationVec &Locations, LiveOutVec &LiveOuts,
-                 uint64_t FrameSize, const CalleePairVecTy& callees)
+                 const CalleePairVecTy& callees)
       : CSOffsetExpr(CSOffsetExpr), ID(ID), Locations(Locations),
-        LiveOuts(LiveOuts), FrameSize(FrameSize), CalleePairs(callees) {}
+        LiveOuts(LiveOuts), CalleePairs(callees) {}
   };
 
   typedef std::vector<CallsiteInfo> CallsiteInfoList;
-
-  struct ConstantPool {
-  private:
-    typedef std::map<int64_t, size_t> ConstantsMap;
-    std::vector<int64_t> ConstantsList;
-    ConstantsMap ConstantIndexes;
-
-  public:
-    size_t getNumConstants() const { return ConstantsList.size(); }
-    int64_t getConstant(size_t Idx) const { return ConstantsList[Idx]; }
-    size_t getConstantIndex(int64_t ConstVal) {
-      size_t NextIdx = ConstantsList.size();
-      ConstantsMap::const_iterator I =
-        ConstantIndexes.insert(ConstantIndexes.end(),
-                               std::make_pair(ConstVal, NextIdx));
-      if (I->second == NextIdx)
-        ConstantsList.push_back(ConstVal);
-      return I->second;
-    }
-  };
 
   AsmPrinter &AP;
   CallsiteInfoList CSInfos;
@@ -233,8 +215,19 @@ public: // Hack: Exposed for PATCHPOINT
                            MachineInstr::const_mop_iterator MOI,
                            MachineInstr::const_mop_iterator MOE,
                            bool recordResult = false,
-                           uint64_t frameSize = 0,
                            const CalleePairVecTy* callee_saves = NULL);
+
+  /// \brief Emit the stackmap header.
+  void emitStackmapHeader(MCStreamer &OS);
+
+  /// \brief Emit the function frame record for each function.
+  void emitFunctionFrameRecords(MCStreamer &OS);
+
+  /// \brief Emit the constant pool.
+  void emitConstantPoolEntries(MCStreamer &OS);
+
+  /// \brief Emit the callsite info for each stackmap/patchpoint intrinsic call.
+  void emitCallsiteEntries(MCStreamer &OS, const TargetRegisterInfo *TRI);
 };
 
 }

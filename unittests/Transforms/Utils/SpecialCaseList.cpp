@@ -29,18 +29,17 @@ protected:
 
   GlobalVariable *makeGlobal(StringRef Name, StringRef StructName, Module &M) {
     StructType *ST =
-        StructType::create(StructName, Type::getInt32Ty(Ctx), (Type*)0);
+        StructType::create(StructName, Type::getInt32Ty(Ctx), (Type*)nullptr);
     return new GlobalVariable(
-        M, ST, false, GlobalValue::ExternalLinkage, 0, Name);
+        M, ST, false, GlobalValue::ExternalLinkage, nullptr, Name);
   }
 
-  GlobalAlias *makeAlias(StringRef Name, GlobalValue *Aliasee) {
-    return new GlobalAlias(Aliasee->getType(), GlobalValue::ExternalLinkage,
-                           Name, Aliasee, Aliasee->getParent());
+  GlobalAlias *makeAlias(StringRef Name, GlobalObject *Aliasee) {
+    return GlobalAlias::create(GlobalValue::ExternalLinkage, Name, Aliasee);
   }
 
   SpecialCaseList *makeSpecialCaseList(StringRef List, std::string &Error) {
-    OwningPtr<MemoryBuffer> MB(MemoryBuffer::getMemBuffer(List));
+    std::unique_ptr<MemoryBuffer> MB(MemoryBuffer::getMemBuffer(List));
     return SpecialCaseList::create(MB.get(), Error);
   }
 
@@ -60,9 +59,10 @@ TEST_F(SpecialCaseListTest, ModuleIsIn) {
   Function *F = makeFunction("foo", M);
   GlobalVariable *GV = makeGlobal("bar", "t", M);
 
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList("# This is a comment.\n"
-                                                     "\n"
-                                                     "src:hello\n"));
+  std::unique_ptr<SpecialCaseList> SCL(
+      makeSpecialCaseList("# This is a comment.\n"
+                          "\n"
+                          "src:hello\n"));
   EXPECT_TRUE(SCL->isIn(M));
   EXPECT_TRUE(SCL->isIn(*F));
   EXPECT_TRUE(SCL->isIn(*GV));
@@ -83,7 +83,7 @@ TEST_F(SpecialCaseListTest, FunctionIsIn) {
   Function *Foo = makeFunction("foo", M);
   Function *Bar = makeFunction("bar", M);
 
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList("fun:foo\n"));
+  std::unique_ptr<SpecialCaseList> SCL(makeSpecialCaseList("fun:foo\n"));
   EXPECT_TRUE(SCL->isIn(*Foo));
   EXPECT_FALSE(SCL->isIn(*Bar));
 
@@ -107,7 +107,7 @@ TEST_F(SpecialCaseListTest, GlobalIsIn) {
   GlobalVariable *Foo = makeGlobal("foo", "t1", M);
   GlobalVariable *Bar = makeGlobal("bar", "t2", M);
 
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList("global:foo\n"));
+  std::unique_ptr<SpecialCaseList> SCL(makeSpecialCaseList("global:foo\n"));
   EXPECT_TRUE(SCL->isIn(*Foo));
   EXPECT_FALSE(SCL->isIn(*Bar));
   EXPECT_FALSE(SCL->isIn(*Foo, "init"));
@@ -157,7 +157,7 @@ TEST_F(SpecialCaseListTest, AliasIsIn) {
   GlobalAlias *FooAlias = makeAlias("fooalias", Foo);
   GlobalAlias *BarAlias = makeAlias("baralias", Bar);
 
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList("fun:foo\n"));
+  std::unique_ptr<SpecialCaseList> SCL(makeSpecialCaseList("fun:foo\n"));
   EXPECT_FALSE(SCL->isIn(*FooAlias));
   EXPECT_FALSE(SCL->isIn(*BarAlias));
 
@@ -193,9 +193,9 @@ TEST_F(SpecialCaseListTest, Substring) {
   GlobalAlias *GA1 = makeAlias("buffoonery", F);
   GlobalAlias *GA2 = makeAlias("foobar", GV);
 
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList("src:hello\n"
-                                                     "fun:foo\n"
-                                                     "global:bar\n"));
+  std::unique_ptr<SpecialCaseList> SCL(makeSpecialCaseList("src:hello\n"
+                                                           "fun:foo\n"
+                                                           "global:bar\n"));
   EXPECT_FALSE(SCL->isIn(M));
   EXPECT_FALSE(SCL->isIn(*F));
   EXPECT_FALSE(SCL->isIn(*GV));
@@ -209,22 +209,22 @@ TEST_F(SpecialCaseListTest, Substring) {
 
 TEST_F(SpecialCaseListTest, InvalidSpecialCaseList) {
   std::string Error;
-  EXPECT_EQ(0, makeSpecialCaseList("badline", Error));
+  EXPECT_EQ(nullptr, makeSpecialCaseList("badline", Error));
   EXPECT_EQ("Malformed line 1: 'badline'", Error);
-  EXPECT_EQ(0, makeSpecialCaseList("src:bad[a-", Error));
+  EXPECT_EQ(nullptr, makeSpecialCaseList("src:bad[a-", Error));
   EXPECT_EQ("Malformed regex in line 1: 'bad[a-': invalid character range",
             Error);
-  EXPECT_EQ(0, makeSpecialCaseList("src:a.c\n"
+  EXPECT_EQ(nullptr, makeSpecialCaseList("src:a.c\n"
                                    "fun:fun(a\n",
                                    Error));
   EXPECT_EQ("Malformed regex in line 2: 'fun(a': parentheses not balanced",
             Error);
-  EXPECT_EQ(0, SpecialCaseList::create("unexisting", Error));
+  EXPECT_EQ(nullptr, SpecialCaseList::create("unexisting", Error));
   EXPECT_EQ(0U, Error.find("Can't open file 'unexisting':"));
 }
 
 TEST_F(SpecialCaseListTest, EmptySpecialCaseList) {
-  OwningPtr<SpecialCaseList> SCL(makeSpecialCaseList(""));
+  std::unique_ptr<SpecialCaseList> SCL(makeSpecialCaseList(""));
   Module M("foo", Ctx);
   EXPECT_FALSE(SCL->isIn(M));
 }

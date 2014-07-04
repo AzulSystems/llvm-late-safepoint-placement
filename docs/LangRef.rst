@@ -117,8 +117,8 @@ And the hard way:
 
 .. code-block:: llvm
 
-    %0 = add i32 %X, %X           ; yields {i32}:%0
-    %1 = add i32 %0, %0           ; yields {i32}:%1
+    %0 = add i32 %X, %X           ; yields i32:%0
+    %1 = add i32 %0, %0           ; yields i32:%1
     %result = add i32 %1, %1
 
 This last way of multiplying ``%X`` by 8 illustrates several important
@@ -197,16 +197,6 @@ linkage:
     private to be renamed as necessary to avoid collisions. Because the
     symbol is private to the module, all references can be updated. This
     doesn't show up in any symbol table in the object file.
-``linker_private``
-    Similar to ``private``, but the symbol is passed through the
-    assembler and evaluated by the linker. Unlike normal strong symbols,
-    they are removed by the linker from the final linked image
-    (executable or dynamic library).
-``linker_private_weak``
-    Similar to "``linker_private``", but the symbol is weak. Note that
-    ``linker_private_weak`` symbols are subject to coalescing by the
-    linker. The symbols are removed by the linker from the final linked
-    image (executable or dynamic library).
 ``internal``
     Similar to private, but the value shows as a local symbol
     (``STB_LOCAL`` in the case of ELF) in the object file. This
@@ -450,7 +440,10 @@ styles:
     defining module will bind to the local symbol. That is, the symbol
     cannot be overridden by another module.
 
-.. _namedtypes:
+A symbol with ``internal`` or ``private`` linkage must have ``default``
+visibility.
+
+.. _dllstorageclass:
 
 DLL Storage Classes
 -------------------
@@ -471,45 +464,10 @@ DLL storage class:
     exists for defining a dll interface, the compiler, assembler and linker know
     it is externally referenced and must refrain from deleting the symbol.
 
-Named Types
------------
+.. _tls_model:
 
-LLVM IR allows you to specify name aliases for certain types. This can
-make it easier to read the IR and make the IR more condensed
-(particularly when recursive types are involved). An example of a name
-specification is:
-
-.. code-block:: llvm
-
-    %mytype = type { %mytype*, i32 }
-
-You may give a name to any :ref:`type <typesystem>` except
-":ref:`void <t_void>`". Type name aliases may be used anywhere a type is
-expected with the syntax "%mytype".
-
-Note that type names are aliases for the structural type that they
-indicate, and that you can therefore specify multiple names for the same
-type. This often leads to confusing behavior when dumping out a .ll
-file. Since LLVM IR uses structural typing, the name is not part of the
-type. When printing out LLVM IR, the printer will pick *one name* to
-render all types of a particular shape. This means that if you have code
-where two different source types end up having the same LLVM type, that
-the dumper will sometimes print the "wrong" or unexpected type. This is
-an important design point and isn't going to change.
-
-.. _globalvars:
-
-Global Variables
-----------------
-
-Global variables define regions of memory allocated at compilation time
-instead of run-time.
-
-Global variables definitions must be initialized, may have an explicit section
-to be placed in, and may have an optional explicit alignment specified.
-
-Global variables in other translation units can also be declared, in which
-case they don't have an initializer.
+Thread Local Storage Models
+---------------------------
 
 A variable may be defined as ``thread_local``, which means that it will
 not be shared by threads (each thread will have a separated copy of the
@@ -523,11 +481,51 @@ TLS model may be specified:
 ``localexec``
     For variables defined in the executable and only used within it.
 
+If no explicit model is given, the "general dynamic" model is used.
+
 The models correspond to the ELF TLS models; see `ELF Handling For
 Thread-Local Storage <http://people.redhat.com/drepper/tls.pdf>`_ for
 more information on under which circumstances the different models may
 be used. The target may choose a different TLS model if the specified
 model is not supported, or if a better choice of model can be made.
+
+A model can also be specified in a alias, but then it only governs how
+the alias is accessed. It will not have any effect in the aliasee.
+
+.. _namedtypes:
+
+Structure Types
+---------------
+
+LLVM IR allows you to specify both "identified" and "literal" :ref:`structure
+types <t_struct>`.  Literal types are uniqued structurally, but identified types
+are never uniqued.  An :ref:`opaque structural type <t_opaque>` can also be used
+to forward declare a type which is not yet available.
+
+An example of a identified structure specification is:
+
+.. code-block:: llvm
+
+    %mytype = type { %mytype*, i32 }
+
+Prior to the LLVM 3.0 release, identified types were structurally uniqued.  Only
+literal types are uniqued in recent versions of LLVM.
+
+.. _globalvars:
+
+Global Variables
+----------------
+
+Global variables define regions of memory allocated at compilation time
+instead of run-time.
+
+Global variables definitions must be initialized.
+
+Global variables in other translation units can also be declared, in which
+case they don't have an initializer.
+
+Either global variable definitions or declarations may have an explicit section
+to be placed in and may have an optional explicit alignment specified.
 
 A variable may be defined as a global ``constant``, which indicates that
 the contents of the variable will **never** be modified (enabling better
@@ -564,6 +562,8 @@ is zero. The address space qualifier must precede any other attributes.
 
 LLVM allows an explicit section to be specified for globals. If the
 target supports it, it will emit globals to the section specified.
+Additionally, the global can placed in a comdat if the target has the necessary
+support.
 
 By default, global initializers are optimized by assuming that global
 variables defined within the module are not modified from their
@@ -586,11 +586,14 @@ iteration.
 
 Globals can also have a :ref:`DLL storage class <dllstorageclass>`.
 
+Variables and aliasaes can have a
+:ref:`Thread Local Storage Model <tls_model>`.
+
 Syntax::
 
     [@<GlobalVarName> =] [Linkage] [Visibility] [DLLStorageClass] [ThreadLocal]
-                         [AddrSpace] [unnamed_addr] [ExternallyInitialized]
-                         <global | constant> <Type>
+                         [unnamed_addr] [AddrSpace] [ExternallyInitialized]
+                         <global | constant> <Type> [<InitializerConstant>]
                          [, section "name"] [, align <Alignment>]
 
 For example, the following defines a global in a numbered address space
@@ -626,8 +629,9 @@ an optional ``unnamed_addr`` attribute, a return type, an optional
 :ref:`parameter attribute <paramattrs>` for the return type, a function
 name, a (possibly empty) argument list (each with optional :ref:`parameter
 attributes <paramattrs>`), optional :ref:`function attributes <fnattrs>`,
-an optional section, an optional alignment, an optional :ref:`garbage
-collector name <gc>`, an optional :ref:`prefix <prefixdata>`, an opening
+an optional section, an optional alignment,
+an optional :ref:`comdat <langref_comdats>`,
+an optional :ref:`garbage collector name <gc>`, an optional :ref:`prefix <prefixdata>`, an opening
 curly brace, a list of basic blocks, and a closing curly brace.
 
 LLVM function declarations consist of the "``declare``" keyword, an
@@ -657,6 +661,7 @@ predecessors, it also cannot have any :ref:`PHI nodes <i_phi>`.
 
 LLVM allows an explicit section to be specified for functions. If the
 target supports it, it will emit functions to the section specified.
+Additionally, the function can placed in a COMDAT.
 
 An explicit alignment may be specified for a function. If not present,
 or if the alignment is set to zero, the alignment of the function is set
@@ -672,29 +677,131 @@ Syntax::
     define [linkage] [visibility] [DLLStorageClass]
            [cconv] [ret attrs]
            <ResultType> @<FunctionName> ([argument list])
-           [fn Attrs] [section "name"] [align N]
-           [gc] [prefix Constant] { ... }
+           [unnamed_addr] [fn Attrs] [section "name"] [comdat $<ComdatName>]
+           [align N] [gc] [prefix Constant] { ... }
 
 .. _langref_aliases:
 
 Aliases
 -------
 
-Aliases act as "second name" for the aliasee value (which can be either
-function, global variable, another alias or bitcast of global value).
+Aliases, unlike function or variables, don't create any new data. They
+are just a new symbol and metadata for an existing position.
+
+Aliases have a name and an aliasee that is either a global value or a
+constant expression.
+
 Aliases may have an optional :ref:`linkage type <linkage>`, an optional
-:ref:`visibility style <visibility>`, and an optional :ref:`DLL storage class
-<dllstorageclass>`.
+:ref:`visibility style <visibility>`, an optional :ref:`DLL storage class
+<dllstorageclass>` and an optional :ref:`tls model <tls_model>`.
 
 Syntax::
 
-    @<Name> = [Visibility] [DLLStorageClass] alias [Linkage] <AliaseeTy> @<Aliasee>
+    @<Name> = [Visibility] [DLLStorageClass] [ThreadLocal] [unnamed_addr] alias [Linkage] <AliaseeTy> @<Aliasee>
 
-The linkage must be one of ``private``, ``linker_private``,
-``linker_private_weak``, ``internal``, ``linkonce``, ``weak``,
+The linkage must be one of ``private``, ``internal``, ``linkonce``, ``weak``,
 ``linkonce_odr``, ``weak_odr``, ``external``. Note that some system linkers
-might not correctly handle dropping a weak symbol that is aliased by a non-weak
-alias.
+might not correctly handle dropping a weak symbol that is aliased.
+
+Alias that are not ``unnamed_addr`` are guaranteed to have the same address as
+the aliasee expression. ``unnamed_addr`` ones are only guaranteed to point
+to the same content.
+
+Since aliases are only a second name, some restrictions apply, of which
+some can only be checked when producing an object file:
+
+* The expression defining the aliasee must be computable at assembly
+  time. Since it is just a name, no relocations can be used.
+
+* No alias in the expression can be weak as the possibility of the
+  intermediate alias being overridden cannot be represented in an
+  object file.
+
+* No global value in the expression can be a declaration, since that
+  would require a relocation, which is not possible.
+
+.. _langref_comdats:
+
+Comdats
+-------
+
+Comdat IR provides access to COFF and ELF object file COMDAT functionality.
+
+Comdats have a name which represents the COMDAT key.  All global objects which
+specify this key will only end up in the final object file if the linker chooses
+that key over some other key.  Aliases are placed in the same COMDAT that their
+aliasee computes to, if any.
+
+Comdats have a selection kind to provide input on how the linker should
+choose between keys in two different object files.
+
+Syntax::
+
+    $<Name> = comdat SelectionKind
+
+The selection kind must be one of the following:
+
+``any``
+    The linker may choose any COMDAT key, the choice is arbitrary.
+``exactmatch``
+    The linker may choose any COMDAT key but the sections must contain the
+    same data.
+``largest``
+    The linker will choose the section containing the largest COMDAT key.
+``noduplicates``
+    The linker requires that only section with this COMDAT key exist.
+``samesize``
+    The linker may choose any COMDAT key but the sections must contain the
+    same amount of data.
+
+Note that the Mach-O platform doesn't support COMDATs and ELF only supports
+``any`` as a selection kind.
+
+Here is an example of a COMDAT group where a function will only be selected if
+the COMDAT key's section is the largest:
+
+.. code-block:: llvm
+
+   $foo = comdat largest
+   @foo = global i32 2, comdat $foo
+
+   define void @bar() comdat $foo {
+     ret void
+   }
+
+In a COFF object file, this will create a COMDAT section with selection kind
+``IMAGE_COMDAT_SELECT_LARGEST`` containing the contents of the ``@foo`` symbol
+and another COMDAT section with selection kind
+``IMAGE_COMDAT_SELECT_ASSOCIATIVE`` which is associated with the first COMDAT
+section and contains the contents of the ``@baz`` symbol.
+
+There are some restrictions on the properties of the global object.
+It, or an alias to it, must have the same name as the COMDAT group when
+targeting COFF.
+The contents and size of this object may be used during link-time to determine
+which COMDAT groups get selected depending on the selection kind.
+Because the name of the object must match the name of the COMDAT group, the
+linkage of the global object must not be local; local symbols can get renamed
+if a collision occurs in the symbol table.
+
+The combined use of COMDATS and section attributes may yield surprising results.
+For example:
+
+.. code-block:: llvm
+
+   $foo = comdat any
+   $bar = comdat any
+   @g1 = global i32 42, section "sec", comdat $foo
+   @g2 = global i32 42, section "sec", comdat $bar
+
+From the object file perspective, this requires the creation of two sections
+with the same name.  This is necessary because both globals belong to different
+COMDAT groups and COMDATs, at the object file level, are represented by
+sections.
+
+Note that certain IR constructs like global variables and functions may create
+COMDATs in the object file in addition to any which are specified using COMDAT
+IR.  This arises, for example, when a global variable has linkonce_odr linkage.
 
 .. _namedmetadatastructure:
 
@@ -780,8 +887,6 @@ Currently, only the following parameter attributes are defined:
 
 ``inalloca``
 
-.. Warning:: This feature is unstable and not fully implemented.
-
     The ``inalloca`` argument attribute allows the caller to take the
     address of outgoing stack arguments.  An ``inalloca`` argument must
     be a pointer to stack memory produced by an ``alloca`` instruction.
@@ -815,6 +920,9 @@ Currently, only the following parameter attributes are defined:
     not to trap and to be properly aligned. This may only be applied to
     the first parameter. This is not a valid attribute for return
     values.
+
+.. _noalias:
+
 ``noalias``
     This indicates that pointer values :ref:`based <pointeraliasing>` on
     the argument or return value do not alias pointer values which are
@@ -824,8 +932,8 @@ Currently, only the following parameter attributes are defined:
     "irrelevant" to the ``noalias`` keyword for the arguments and return
     value used in that call. The caller shares the responsibility with
     the callee for ensuring that these requirements are met. For further
-    details, please see the discussion of the NoAlias response in `alias
-    analysis <AliasAnalysis.html#MustMayNo>`_.
+    details, please see the discussion of the NoAlias response in :ref:`alias
+    analysis <Must, May, or No>`.
 
     Note that this definition of ``noalias`` is intentionally similar
     to the definition of ``restrict`` in C99 for function arguments,
@@ -853,6 +961,13 @@ Currently, only the following parameter attributes are defined:
     the callee. The parameter and the function return type must be valid
     operands for the :ref:`bitcast instruction <i_bitcast>`. This is not a
     valid attribute for return values and can only be applied to one parameter.
+
+``nonnull``
+    This indicates that the parameter or return pointer is not null. This
+    attribute may only be applied to pointer typed parameters. This is not
+    checked or enforced by LLVM, the caller must ensure that the pointer
+    passed in is non-null, or the callee must ensure that the returned pointer 
+    is non-null.
 
 .. _gc:
 
@@ -995,6 +1110,14 @@ example:
     inlining this function is desirable (such as the "inline" keyword in
     C/C++). It is just a hint; it imposes no requirements on the
     inliner.
+``jumptable``
+    This attribute indicates that the function should be added to a
+    jump-instruction table at code-generation time, and that all address-taken
+    references to this function should be replaced with a reference to the
+    appropriate jump-instruction-table function pointer. Note that this creates
+    a new pointer for the original function, which means that code that depends
+    on function-pointer identity can break. So, any function annotated with
+    ``jumptable`` must also be ``unnamed_addr``.
 ``minsize``
     This attribute suggests that optimization passes and code generator
     passes make choices that keep the code size of this function as small
@@ -1505,7 +1628,7 @@ Atomic Memory Ordering Constraints
 Atomic instructions (:ref:`cmpxchg <i_cmpxchg>`,
 :ref:`atomicrmw <i_atomicrmw>`, :ref:`fence <i_fence>`,
 :ref:`atomic load <i_load>`, and :ref:`atomic store <i_store>`) take
-an ordering parameter that determines which other atomic instructions on
+ordering parameters that determine which other atomic instructions on
 the same address they *synchronize with*. These semantics are borrowed
 from Java and C++0x, but are somewhat more colloquial. If these
 descriptions aren't precise enough, check those specs (see spec
@@ -1752,14 +1875,12 @@ Floating Point Types
    * - ``ppc_fp128``
      - 128-bit floating point value (two 64-bits)
 
-.. _t_x86mmx:
-
-X86mmx Type
-"""""""""""
+X86_mmx Type
+""""""""""""
 
 :Overview:
 
-The x86mmx type represents a value held in an MMX register on an x86
+The x86_mmx type represents a value held in an MMX register on an x86
 machine. The operations allowed on it are quite limited: parameters and
 return values, load and store, and bitcast. User-specified MMX
 instructions are represented as intrinsic or asm calls with arguments
@@ -1770,7 +1891,7 @@ of this type.
 
 ::
 
-      x86mmx
+      x86_mmx
 
 
 .. _t_pointer:
@@ -2001,6 +2122,8 @@ notion of a forward declared structure.
 | ``opaque``   | An opaque type.   |
 +--------------+-------------------+
 
+.. _constants:
+
 Constants
 =========
 
@@ -2055,7 +2178,7 @@ The IEEE 16-bit format (half precision) is represented by ``0xH``
 followed by 4 hexadecimal digits. All hexadecimal formats are big-endian
 (sign bit at the left).
 
-There are no constants of type x86mmx.
+There are no constants of type x86_mmx.
 
 .. _complexconstants:
 
@@ -2713,11 +2836,12 @@ number representing the maximum relative error, for example:
 '``range``' Metadata
 ^^^^^^^^^^^^^^^^^^^^
 
-``range`` metadata may be attached only to loads of integer types. It
-expresses the possible ranges the loaded value is in. The ranges are
-represented with a flattened list of integers. The loaded value is known
-to be in the union of the ranges defined by each consecutive pair. Each
-pair has the following properties:
+``range`` metadata may be attached only to ``load``, ``call`` and ``invoke`` of
+integer types. It expresses the possible ranges the loaded value or the value
+returned by the called function at this call site is in. The ranges are
+represented with a flattened list of integers. The loaded value or the value
+returned is known to be in the union of the ranges defined by each consecutive
+pair. Each pair has the following properties:
 
 -  The type must match the type loaded by the instruction.
 -  The pair ``a,b`` represents the range ``[a,b)``.
@@ -2735,8 +2859,9 @@ Examples:
 
       %a = load i8* %x, align 1, !range !0 ; Can only be 0 or 1
       %b = load i8* %y, align 1, !range !1 ; Can only be 255 (-1), 0 or 1
-      %c = load i8* %z, align 1, !range !2 ; Can only be 0, 1, 3, 4 or 5
-      %d = load i8* %z, align 1, !range !3 ; Can only be -2, -1, 3, 4 or 5
+      %c = call i8 @foo(),       !range !2 ; Can only be 0, 1, 3, 4 or 5
+      %d = invoke i8 @bar() to label %cont
+             unwind label %lpad, !range !3 ; Can only be -2, -1, 3, 4 or 5
     ...
     !0 = metadata !{ i8 0, i8 2 }
     !1 = metadata !{ i8 255, i8 2 }
@@ -2766,7 +2891,7 @@ constructs:
 
 The loop identifier metadata can be used to specify additional per-loop
 metadata. Any operands after the first operand can be treated as user-defined
-metadata. For example the ``llvm.vectorizer.unroll`` metadata is understood
+metadata. For example the ``llvm.loop.vectorize.unroll`` metadata is understood
 by the loop vectorizer to indicate how many times to unroll the loop:
 
 .. code-block:: llvm
@@ -2774,7 +2899,7 @@ by the loop vectorizer to indicate how many times to unroll the loop:
       br i1 %exitcond, label %._crit_edge, label %.lr.ph, !llvm.loop !0
     ...
     !0 = metadata !{ metadata !0, metadata !1 }
-    !1 = metadata !{ metadata !"llvm.vectorizer.unroll", i32 2 }
+    !1 = metadata !{ metadata !"llvm.loop.vectorize.unroll", i32 2 }
 
 '``llvm.mem``'
 ^^^^^^^^^^^^^^^
@@ -2785,15 +2910,29 @@ for optimizations are prefixed with ``llvm.mem``.
 '``llvm.mem.parallel_loop_access``' Metadata
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For a loop to be parallel, in addition to using
-the ``llvm.loop`` metadata to mark the loop latch branch instruction,
-also all of the memory accessing instructions in the loop body need to be
-marked with the ``llvm.mem.parallel_loop_access`` metadata. If there
-is at least one memory accessing instruction not marked with the metadata,
-the loop must be considered a sequential loop. This causes parallel loops to be
-converted to sequential loops due to optimization passes that are unaware of
-the parallel semantics and that insert new memory instructions to the loop
-body.
+The ``llvm.mem.parallel_loop_access`` metadata refers to a loop identifier, 
+or metadata containing a list of loop identifiers for nested loops. 
+The metadata is attached to memory accessing instructions and denotes that 
+no loop carried memory dependence exist between it and other instructions denoted 
+with the same loop identifier.
+
+Precisely, given two instructions ``m1`` and ``m2`` that both have the 
+``llvm.mem.parallel_loop_access`` metadata, with ``L1`` and ``L2`` being the 
+set of loops associated with that metadata, respectively, then there is no loop 
+carried dependence between ``m1`` and ``m2`` for loops in both ``L1`` and 
+``L2``.
+
+As a special case, if all memory accessing instructions in a loop have 
+``llvm.mem.parallel_loop_access`` metadata that refers to that loop, then the 
+loop has no loop carried memory dependences and is considered to be a parallel 
+loop.  
+
+Note that if not all memory access instructions have such metadata referring to 
+the loop, then the loop is considered not being trivially parallel. Additional 
+memory dependence analysis is required to make that determination.  As a fail 
+safe mechanism, this causes loops that were originally parallel to be considered 
+sequential (if optimization passes that are unaware of the parallel semantics 
+insert new memory instructions into the loop body).
 
 Example of a loop that is considered parallel due to its correct use of
 both ``llvm.loop`` and ``llvm.mem.parallel_loop_access``
@@ -2803,9 +2942,9 @@ metadata types that refer to the same loop identifier metadata.
 
    for.body:
      ...
-     %0 = load i32* %arrayidx, align 4, !llvm.mem.parallel_loop_access !0
+     %val0 = load i32* %arrayidx, !llvm.mem.parallel_loop_access !0
      ...
-     store i32 %0, i32* %arrayidx4, align 4, !llvm.mem.parallel_loop_access !0
+     store i32 %val0, i32* %arrayidx1, !llvm.mem.parallel_loop_access !0
      ...
      br i1 %exitcond, label %for.end, label %for.body, !llvm.loop !0
 
@@ -2820,21 +2959,22 @@ the loop identifier metadata node directly:
 .. code-block:: llvm
 
    outer.for.body:
-   ...
+     ...
+     %val1 = load i32* %arrayidx3, !llvm.mem.parallel_loop_access !2
+     ...
+     br label %inner.for.body
 
    inner.for.body:
      ...
-     %0 = load i32* %arrayidx, align 4, !llvm.mem.parallel_loop_access !0
+     %val0 = load i32* %arrayidx1, !llvm.mem.parallel_loop_access !0
      ...
-     store i32 %0, i32* %arrayidx4, align 4, !llvm.mem.parallel_loop_access !0
+     store i32 %val0, i32* %arrayidx2, !llvm.mem.parallel_loop_access !0
      ...
      br i1 %exitcond, label %inner.for.end, label %inner.for.body, !llvm.loop !1
 
    inner.for.end:
      ...
-     %0 = load i32* %arrayidx, align 4, !llvm.mem.parallel_loop_access !0
-     ...
-     store i32 %0, i32* %arrayidx4, align 4, !llvm.mem.parallel_loop_access !0
+     store i32 %val1, i32* %arrayidx4, !llvm.mem.parallel_loop_access !2
      ...
      br i1 %exitcond, label %outer.for.end, label %outer.for.body, !llvm.loop !2
 
@@ -2844,54 +2984,54 @@ the loop identifier metadata node directly:
    !1 = metadata !{ metadata !1 } ; an identifier for the inner loop
    !2 = metadata !{ metadata !2 } ; an identifier for the outer loop
 
-'``llvm.vectorizer``'
-^^^^^^^^^^^^^^^^^^^^^
+'``llvm.loop.vectorize``'
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Metadata prefixed with ``llvm.vectorizer`` is used to control per-loop
+Metadata prefixed with ``llvm.loop.vectorize`` is used to control per-loop
 vectorization parameters such as vectorization factor and unroll factor.
 
-``llvm.vectorizer`` metadata should be used in conjunction with ``llvm.loop``
-loop identification metadata.
+``llvm.loop.vectorize`` metadata should be used in conjunction with
+``llvm.loop`` loop identification metadata.
 
-'``llvm.vectorizer.unroll``' Metadata
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+'``llvm.loop.vectorize.unroll``' Metadata
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This metadata instructs the loop vectorizer to unroll the specified
 loop exactly ``N`` times.
 
-The first operand is the string ``llvm.vectorizer.unroll`` and the second
+The first operand is the string ``llvm.loop.vectorize.unroll`` and the second
 operand is an integer specifying the unroll factor. For example:
 
 .. code-block:: llvm
 
-   !0 = metadata !{ metadata !"llvm.vectorizer.unroll", i32 4 }
+   !0 = metadata !{ metadata !"llvm.loop.vectorize.unroll", i32 4 }
 
-Note that setting ``llvm.vectorizer.unroll`` to 1 disables unrolling of the
-loop.
+Note that setting ``llvm.loop.vectorize.unroll`` to 1 disables
+unrolling of the loop.
 
-If ``llvm.vectorizer.unroll`` is set to 0 then the amount of unrolling will be
-determined automatically.
+If ``llvm.loop.vectorize.unroll`` is set to 0 then the amount of
+unrolling will be determined automatically.
 
-'``llvm.vectorizer.width``' Metadata
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+'``llvm.loop.vectorize.width``' Metadata
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This metadata sets the target width of the vectorizer to ``N``. Without
 this metadata, the vectorizer will choose a width automatically.
 Regardless of this metadata, the vectorizer will only vectorize loops if
 it believes it is valid to do so.
 
-The first operand is the string ``llvm.vectorizer.width`` and the second
-operand is an integer specifying the width. For example:
+The first operand is the string ``llvm.loop.vectorize.width`` and the
+second operand is an integer specifying the width. For example:
 
 .. code-block:: llvm
 
-   !0 = metadata !{ metadata !"llvm.vectorizer.width", i32 4 }
+   !0 = metadata !{ metadata !"llvm.loop.vectorize.width", i32 4 }
 
-Note that setting ``llvm.vectorizer.width`` to 1 disables vectorization of the
-loop.
+Note that setting ``llvm.loop.vectorize.width`` to 1 disables
+vectorization of the loop.
 
-If ``llvm.vectorizer.width`` is set to 0 then the width will be determined
-automatically.
+If ``llvm.loop.vectorize.width`` is set to 0 then the width will be
+determined automatically.
 
 Module Flags Metadata
 =====================
@@ -3093,6 +3233,42 @@ Each individual option is required to be either a valid option for the target's
 linker, or an option that is reserved by the target specific assembly writer or
 object file emitter. No other aspect of these options is defined by the IR.
 
+C type width Module Flags Metadata
+----------------------------------
+
+The ARM backend emits a section into each generated object file describing the
+options that it was compiled with (in a compiler-independent way) to prevent
+linking incompatible objects, and to allow automatic library selection. Some
+of these options are not visible at the IR level, namely wchar_t width and enum
+width.
+
+To pass this information to the backend, these options are encoded in module
+flags metadata, using the following key-value pairs:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Key
+     - Value
+
+   * - short_wchar
+     - * 0 --- sizeof(wchar_t) == 4
+       * 1 --- sizeof(wchar_t) == 2
+
+   * - short_enum
+     - * 0 --- Enums are at least as large as an ``int``.
+       * 1 --- Enums are stored in the smallest integer type which can
+         represent all of its values.
+
+For example, the following metadata section specifies that the module was
+compiled with a ``wchar_t`` width of 4 bytes, and the underlying type of an
+enum is the smallest type which can represent all of its values::
+
+    !llvm.module.flags = !{!0, !1}
+    !0 = metadata !{i32 1, metadata !"short_wchar", i32 1}
+    !1 = metadata !{i32 1, metadata !"short_enum", i32 0}
+
 .. _intrinsicglobalvariables:
 
 Intrinsic Global Variables
@@ -3158,14 +3334,18 @@ The '``llvm.global_ctors``' Global Variable
 
 .. code-block:: llvm
 
-    %0 = type { i32, void ()* }
-    @llvm.global_ctors = appending global [1 x %0] [%0 { i32 65535, void ()* @ctor }]
+    %0 = type { i32, void ()*, i8* }
+    @llvm.global_ctors = appending global [1 x %0] [%0 { i32 65535, void ()* @ctor, i8* @data }]
 
 The ``@llvm.global_ctors`` array contains a list of constructor
-functions and associated priorities. The functions referenced by this
-array will be called in ascending order of priority (i.e. lowest first)
-when the module is loaded. The order of functions with the same priority
-is not defined.
+functions, priorities, and an optional associated global or function.
+The functions referenced by this array will be called in ascending order
+of priority (i.e. lowest first) when the module is loaded. The order of
+functions with the same priority is not defined.
+
+If the third field is present, non-null, and points to a global variable
+or function, the initializer function will only run if the associated
+data from the current module is not discarded.
 
 .. _llvmglobaldtors:
 
@@ -3174,14 +3354,18 @@ The '``llvm.global_dtors``' Global Variable
 
 .. code-block:: llvm
 
-    %0 = type { i32, void ()* }
-    @llvm.global_dtors = appending global [1 x %0] [%0 { i32 65535, void ()* @dtor }]
+    %0 = type { i32, void ()*, i8* }
+    @llvm.global_dtors = appending global [1 x %0] [%0 { i32 65535, void ()* @dtor, i8* @data }]
 
-The ``@llvm.global_dtors`` array contains a list of destructor functions
-and associated priorities. The functions referenced by this array will
-be called in descending order of priority (i.e. highest first) when the
-module is loaded. The order of functions with the same priority is not
-defined.
+The ``@llvm.global_dtors`` array contains a list of destructor
+functions, priorities, and an optional associated global or function.
+The functions referenced by this array will be called in descending
+order of priority (i.e. highest first) when the module is unloaded. The
+order of functions with the same priority is not defined.
+
+If the third field is present, non-null, and points to a global variable
+or function, the destructor function will only run if the associated
+data from the current module is not discarded.
 
 Instruction Reference
 =====================
@@ -3518,9 +3702,9 @@ Example:
 .. code-block:: llvm
 
       %retval = invoke i32 @Test(i32 15) to label %Continue
-                  unwind label %TestCleanup              ; {i32}:retval set
+                  unwind label %TestCleanup              ; i32:retval set
       %retval = invoke coldcc i32 %Testfnptr(i32 15) to label %Continue
-                  unwind label %TestCleanup              ; {i32}:retval set
+                  unwind label %TestCleanup              ; i32:retval set
 
 .. _i_resume:
 
@@ -3609,10 +3793,10 @@ Syntax:
 
 ::
 
-      <result> = add <ty> <op1>, <op2>          ; yields {ty}:result
-      <result> = add nuw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = add nsw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = add nuw nsw <ty> <op1>, <op2>  ; yields {ty}:result
+      <result> = add <ty> <op1>, <op2>          ; yields ty:result
+      <result> = add nuw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = add nsw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = add nuw nsw <ty> <op1>, <op2>  ; yields ty:result
 
 Overview:
 """""""""
@@ -3648,7 +3832,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = add i32 4, %var          ; yields {i32}:result = 4 + %var
+      <result> = add i32 4, %var          ; yields i32:result = 4 + %var
 
 .. _i_fadd:
 
@@ -3660,7 +3844,7 @@ Syntax:
 
 ::
 
-      <result> = fadd [fast-math flags]* <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = fadd [fast-math flags]* <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -3687,7 +3871,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = fadd float 4.0, %var          ; yields {float}:result = 4.0 + %var
+      <result> = fadd float 4.0, %var          ; yields float:result = 4.0 + %var
 
 '``sub``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^
@@ -3697,10 +3881,10 @@ Syntax:
 
 ::
 
-      <result> = sub <ty> <op1>, <op2>          ; yields {ty}:result
-      <result> = sub nuw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = sub nsw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = sub nuw nsw <ty> <op1>, <op2>  ; yields {ty}:result
+      <result> = sub <ty> <op1>, <op2>          ; yields ty:result
+      <result> = sub nuw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = sub nsw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = sub nuw nsw <ty> <op1>, <op2>  ; yields ty:result
 
 Overview:
 """""""""
@@ -3739,8 +3923,8 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = sub i32 4, %var          ; yields {i32}:result = 4 - %var
-      <result> = sub i32 0, %val          ; yields {i32}:result = -%var
+      <result> = sub i32 4, %var          ; yields i32:result = 4 - %var
+      <result> = sub i32 0, %val          ; yields i32:result = -%var
 
 .. _i_fsub:
 
@@ -3752,7 +3936,7 @@ Syntax:
 
 ::
 
-      <result> = fsub [fast-math flags]* <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = fsub [fast-math flags]* <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -3782,8 +3966,8 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = fsub float 4.0, %var           ; yields {float}:result = 4.0 - %var
-      <result> = fsub float -0.0, %val          ; yields {float}:result = -%var
+      <result> = fsub float 4.0, %var           ; yields float:result = 4.0 - %var
+      <result> = fsub float -0.0, %val          ; yields float:result = -%var
 
 '``mul``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^
@@ -3793,10 +3977,10 @@ Syntax:
 
 ::
 
-      <result> = mul <ty> <op1>, <op2>          ; yields {ty}:result
-      <result> = mul nuw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = mul nsw <ty> <op1>, <op2>      ; yields {ty}:result
-      <result> = mul nuw nsw <ty> <op1>, <op2>  ; yields {ty}:result
+      <result> = mul <ty> <op1>, <op2>          ; yields ty:result
+      <result> = mul nuw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = mul nsw <ty> <op1>, <op2>      ; yields ty:result
+      <result> = mul nuw nsw <ty> <op1>, <op2>  ; yields ty:result
 
 Overview:
 """""""""
@@ -3836,7 +4020,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = mul i32 4, %var          ; yields {i32}:result = 4 * %var
+      <result> = mul i32 4, %var          ; yields i32:result = 4 * %var
 
 .. _i_fmul:
 
@@ -3848,7 +4032,7 @@ Syntax:
 
 ::
 
-      <result> = fmul [fast-math flags]* <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = fmul [fast-math flags]* <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -3875,7 +4059,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = fmul float 4.0, %var          ; yields {float}:result = 4.0 * %var
+      <result> = fmul float 4.0, %var          ; yields float:result = 4.0 * %var
 
 '``udiv``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -3885,8 +4069,8 @@ Syntax:
 
 ::
 
-      <result> = udiv <ty> <op1>, <op2>         ; yields {ty}:result
-      <result> = udiv exact <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = udiv <ty> <op1>, <op2>         ; yields ty:result
+      <result> = udiv exact <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -3919,7 +4103,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = udiv i32 4, %var          ; yields {i32}:result = 4 / %var
+      <result> = udiv i32 4, %var          ; yields i32:result = 4 / %var
 
 '``sdiv``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -3929,8 +4113,8 @@ Syntax:
 
 ::
 
-      <result> = sdiv <ty> <op1>, <op2>         ; yields {ty}:result
-      <result> = sdiv exact <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = sdiv <ty> <op1>, <op2>         ; yields ty:result
+      <result> = sdiv exact <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -3965,7 +4149,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = sdiv i32 4, %var          ; yields {i32}:result = 4 / %var
+      <result> = sdiv i32 4, %var          ; yields i32:result = 4 / %var
 
 .. _i_fdiv:
 
@@ -3977,7 +4161,7 @@ Syntax:
 
 ::
 
-      <result> = fdiv [fast-math flags]* <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = fdiv [fast-math flags]* <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4004,7 +4188,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = fdiv float 4.0, %var          ; yields {float}:result = 4.0 / %var
+      <result> = fdiv float 4.0, %var          ; yields float:result = 4.0 / %var
 
 '``urem``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -4014,7 +4198,7 @@ Syntax:
 
 ::
 
-      <result> = urem <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = urem <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4046,7 +4230,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = urem i32 4, %var          ; yields {i32}:result = 4 % %var
+      <result> = urem i32 4, %var          ; yields i32:result = 4 % %var
 
 '``srem``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -4056,7 +4240,7 @@ Syntax:
 
 ::
 
-      <result> = srem <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = srem <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4101,7 +4285,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = srem i32 4, %var          ; yields {i32}:result = 4 % %var
+      <result> = srem i32 4, %var          ; yields i32:result = 4 % %var
 
 .. _i_frem:
 
@@ -4113,7 +4297,7 @@ Syntax:
 
 ::
 
-      <result> = frem [fast-math flags]* <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = frem [fast-math flags]* <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4141,7 +4325,7 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = frem float 4.0, %var          ; yields {float}:result = 4.0 % %var
+      <result> = frem float 4.0, %var          ; yields float:result = 4.0 % %var
 
 .. _bitwiseops:
 
@@ -4162,10 +4346,10 @@ Syntax:
 
 ::
 
-      <result> = shl <ty> <op1>, <op2>           ; yields {ty}:result
-      <result> = shl nuw <ty> <op1>, <op2>       ; yields {ty}:result
-      <result> = shl nsw <ty> <op1>, <op2>       ; yields {ty}:result
-      <result> = shl nuw nsw <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = shl <ty> <op1>, <op2>           ; yields ty:result
+      <result> = shl nuw <ty> <op1>, <op2>       ; yields ty:result
+      <result> = shl nsw <ty> <op1>, <op2>       ; yields ty:result
+      <result> = shl nuw nsw <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4203,9 +4387,9 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = shl i32 4, %var   ; yields {i32}: 4 << %var
-      <result> = shl i32 4, 2      ; yields {i32}: 16
-      <result> = shl i32 1, 10     ; yields {i32}: 1024
+      <result> = shl i32 4, %var   ; yields i32: 4 << %var
+      <result> = shl i32 4, 2      ; yields i32: 16
+      <result> = shl i32 1, 10     ; yields i32: 1024
       <result> = shl i32 1, 32     ; undefined
       <result> = shl <2 x i32> < i32 1, i32 1>, < i32 1, i32 2>   ; yields: result=<2 x i32> < i32 2, i32 4>
 
@@ -4217,8 +4401,8 @@ Syntax:
 
 ::
 
-      <result> = lshr <ty> <op1>, <op2>         ; yields {ty}:result
-      <result> = lshr exact <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = lshr <ty> <op1>, <op2>         ; yields ty:result
+      <result> = lshr exact <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4252,10 +4436,10 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = lshr i32 4, 1   ; yields {i32}:result = 2
-      <result> = lshr i32 4, 2   ; yields {i32}:result = 1
-      <result> = lshr i8  4, 3   ; yields {i8}:result = 0
-      <result> = lshr i8 -2, 1   ; yields {i8}:result = 0x7F
+      <result> = lshr i32 4, 1   ; yields i32:result = 2
+      <result> = lshr i32 4, 2   ; yields i32:result = 1
+      <result> = lshr i8  4, 3   ; yields i8:result = 0
+      <result> = lshr i8 -2, 1   ; yields i8:result = 0x7F
       <result> = lshr i32 1, 32  ; undefined
       <result> = lshr <2 x i32> < i32 -2, i32 4>, < i32 1, i32 2>   ; yields: result=<2 x i32> < i32 0x7FFFFFFF, i32 1>
 
@@ -4267,8 +4451,8 @@ Syntax:
 
 ::
 
-      <result> = ashr <ty> <op1>, <op2>         ; yields {ty}:result
-      <result> = ashr exact <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = ashr <ty> <op1>, <op2>         ; yields ty:result
+      <result> = ashr exact <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4303,10 +4487,10 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = ashr i32 4, 1   ; yields {i32}:result = 2
-      <result> = ashr i32 4, 2   ; yields {i32}:result = 1
-      <result> = ashr i8  4, 3   ; yields {i8}:result = 0
-      <result> = ashr i8 -2, 1   ; yields {i8}:result = -1
+      <result> = ashr i32 4, 1   ; yields i32:result = 2
+      <result> = ashr i32 4, 2   ; yields i32:result = 1
+      <result> = ashr i8  4, 3   ; yields i8:result = 0
+      <result> = ashr i8 -2, 1   ; yields i8:result = -1
       <result> = ashr i32 1, 32  ; undefined
       <result> = ashr <2 x i32> < i32 -2, i32 4>, < i32 1, i32 3>   ; yields: result=<2 x i32> < i32 -1, i32 0>
 
@@ -4318,7 +4502,7 @@ Syntax:
 
 ::
 
-      <result> = and <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = and <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4355,9 +4539,9 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = and i32 4, %var         ; yields {i32}:result = 4 & %var
-      <result> = and i32 15, 40          ; yields {i32}:result = 8
-      <result> = and i32 4, 8            ; yields {i32}:result = 0
+      <result> = and i32 4, %var         ; yields i32:result = 4 & %var
+      <result> = and i32 15, 40          ; yields i32:result = 8
+      <result> = and i32 4, 8            ; yields i32:result = 0
 
 '``or``' Instruction
 ^^^^^^^^^^^^^^^^^^^^
@@ -4367,7 +4551,7 @@ Syntax:
 
 ::
 
-      <result> = or <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = or <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4404,9 +4588,9 @@ Example:
 
 ::
 
-      <result> = or i32 4, %var         ; yields {i32}:result = 4 | %var
-      <result> = or i32 15, 40          ; yields {i32}:result = 47
-      <result> = or i32 4, 8            ; yields {i32}:result = 12
+      <result> = or i32 4, %var         ; yields i32:result = 4 | %var
+      <result> = or i32 15, 40          ; yields i32:result = 47
+      <result> = or i32 4, 8            ; yields i32:result = 12
 
 '``xor``' Instruction
 ^^^^^^^^^^^^^^^^^^^^^
@@ -4416,7 +4600,7 @@ Syntax:
 
 ::
 
-      <result> = xor <ty> <op1>, <op2>   ; yields {ty}:result
+      <result> = xor <ty> <op1>, <op2>   ; yields ty:result
 
 Overview:
 """""""""
@@ -4454,10 +4638,10 @@ Example:
 
 .. code-block:: llvm
 
-      <result> = xor i32 4, %var         ; yields {i32}:result = 4 ^ %var
-      <result> = xor i32 15, 40          ; yields {i32}:result = 39
-      <result> = xor i32 4, 8            ; yields {i32}:result = 12
-      <result> = xor i32 %V, -1          ; yields {i32}:result = ~%V
+      <result> = xor i32 4, %var         ; yields i32:result = 4 ^ %var
+      <result> = xor i32 15, 40          ; yields i32:result = 39
+      <result> = xor i32 4, 8            ; yields i32:result = 12
+      <result> = xor i32 %V, -1          ; yields i32:result = ~%V
 
 Vector Operations
 -----------------
@@ -4479,7 +4663,7 @@ Syntax:
 
 ::
 
-      <result> = extractelement <n x <ty>> <val>, i32 <idx>    ; yields <ty>
+      <result> = extractelement <n x <ty>> <val>, <ty2> <idx>  ; yields <ty>
 
 Overview:
 """""""""
@@ -4493,7 +4677,7 @@ Arguments:
 The first operand of an '``extractelement``' instruction is a value of
 :ref:`vector <t_vector>` type. The second operand is an index indicating
 the position from which to extract the element. The index may be a
-variable.
+variable of any integer type.
 
 Semantics:
 """"""""""
@@ -4519,7 +4703,7 @@ Syntax:
 
 ::
 
-      <result> = insertelement <n x <ty>> <val>, <ty> <elt>, i32 <idx>    ; yields <n x <ty>>
+      <result> = insertelement <n x <ty>> <val>, <ty> <elt>, <ty2> <idx>    ; yields <n x <ty>>
 
 Overview:
 """""""""
@@ -4534,7 +4718,7 @@ The first operand of an '``insertelement``' instruction is a value of
 :ref:`vector <t_vector>` type. The second operand is a scalar value whose
 type must equal the element type of the first operand. The third operand
 is an index indicating the position at which to insert the value. The
-index may be a variable.
+index may be a variable of any integer type.
 
 Semantics:
 """"""""""
@@ -4723,7 +4907,7 @@ Syntax:
 
 ::
 
-      <result> = alloca <type>[, inalloca][, <ty> <NumElements>][, align <alignment>]     ; yields {type*}:result
+      <result> = alloca [inalloca] <type> [, <ty> <NumElements>] [, align <alignment>]     ; yields type*:result
 
 Overview:
 """""""""
@@ -4765,10 +4949,10 @@ Example:
 
 .. code-block:: llvm
 
-      %ptr = alloca i32                             ; yields {i32*}:ptr
-      %ptr = alloca i32, i32 4                      ; yields {i32*}:ptr
-      %ptr = alloca i32, i32 4, align 1024          ; yields {i32*}:ptr
-      %ptr = alloca i32, align 1024                 ; yields {i32*}:ptr
+      %ptr = alloca i32                             ; yields i32*:ptr
+      %ptr = alloca i32, i32 4                      ; yields i32*:ptr
+      %ptr = alloca i32, i32 4, align 1024          ; yields i32*:ptr
+      %ptr = alloca i32, align 1024                 ; yields i32*:ptr
 
 .. _i_load:
 
@@ -4851,9 +5035,9 @@ Examples:
 
 .. code-block:: llvm
 
-      %ptr = alloca i32                               ; yields {i32*}:ptr
-      store i32 3, i32* %ptr                          ; yields {void}
-      %val = load i32* %ptr                           ; yields {i32}:val = i32 3
+      %ptr = alloca i32                               ; yields i32*:ptr
+      store i32 3, i32* %ptr                          ; yields void
+      %val = load i32* %ptr                           ; yields i32:val = i32 3
 
 .. _i_store:
 
@@ -4865,8 +5049,8 @@ Syntax:
 
 ::
 
-      store [volatile] <ty> <value>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>]        ; yields {void}
-      store atomic [volatile] <ty> <value>, <ty>* <pointer> [singlethread] <ordering>, align <alignment>  ; yields {void}
+      store [volatile] <ty> <value>, <ty>* <pointer>[, align <alignment>][, !nontemporal !<index>]        ; yields void
+      store atomic [volatile] <ty> <value>, <ty>* <pointer> [singlethread] <ordering>, align <alignment>  ; yields void
 
 Overview:
 """""""""
@@ -4930,9 +5114,9 @@ Example:
 
 .. code-block:: llvm
 
-      %ptr = alloca i32                               ; yields {i32*}:ptr
-      store i32 3, i32* %ptr                          ; yields {void}
-      %val = load i32* %ptr                           ; yields {i32}:val = i32 3
+      %ptr = alloca i32                               ; yields i32*:ptr
+      store i32 3, i32* %ptr                          ; yields void
+      %val = load i32* %ptr                           ; yields i32:val = i32 3
 
 .. _i_fence:
 
@@ -4944,7 +5128,7 @@ Syntax:
 
 ::
 
-      fence [singlethread] <ordering>                   ; yields {void}
+      fence [singlethread] <ordering>                   ; yields void
 
 Overview:
 """""""""
@@ -4987,8 +5171,8 @@ Example:
 
 .. code-block:: llvm
 
-      fence acquire                          ; yields {void}
-      fence singlethread seq_cst             ; yields {void}
+      fence acquire                          ; yields void
+      fence singlethread seq_cst             ; yields void
 
 .. _i_cmpxchg:
 
@@ -5000,14 +5184,14 @@ Syntax:
 
 ::
 
-      cmpxchg [volatile] <ty>* <pointer>, <ty> <cmp>, <ty> <new> [singlethread] <ordering>  ; yields {ty}
+      cmpxchg [weak] [volatile] <ty>* <pointer>, <ty> <cmp>, <ty> <new> [singlethread] <success ordering> <failure ordering> ; yields  { ty, i1 }
 
 Overview:
 """""""""
 
 The '``cmpxchg``' instruction is used to atomically modify memory. It
 loads a value in memory and compares it to a given value. If they are
-equal, it stores a new value into the memory.
+equal, it tries to store a new value into the memory.
 
 Arguments:
 """"""""""
@@ -5023,8 +5207,11 @@ type, and the type of '<pointer>' must be a pointer to that type. If the
 to modify the number or order of execution of this ``cmpxchg`` with
 other :ref:`volatile operations <volatile>`.
 
-The :ref:`ordering <ordering>` argument specifies how this ``cmpxchg``
-synchronizes with other atomic operations.
+The success and failure :ref:`ordering <ordering>` arguments specify how this
+``cmpxchg`` synchronizes with other atomic operations. Both ordering parameters
+must be at least ``monotonic``, the ordering constraint on failure must be no
+stronger than that on success, and the failure ordering cannot be either
+``release`` or ``acq_rel``.
 
 The optional "``singlethread``" argument declares that the ``cmpxchg``
 is only atomic with respect to code (usually signal handlers) running in
@@ -5037,15 +5224,21 @@ equal to the size in memory of the operand.
 Semantics:
 """"""""""
 
-The contents of memory at the location specified by the '``<pointer>``'
-operand is read and compared to '``<cmp>``'; if the read value is the
-equal, '``<new>``' is written. The original value at the location is
-returned.
+The contents of memory at the location specified by the '``<pointer>``' operand
+is read and compared to '``<cmp>``'; if the read value is the equal, the
+'``<new>``' is written. The original value at the location is returned, together
+with a flag indicating success (true) or failure (false).
 
-A successful ``cmpxchg`` is a read-modify-write instruction for the purpose
-of identifying release sequences. A failed ``cmpxchg`` is equivalent to an
-atomic load with an ordering parameter determined by dropping any
-``release`` part of the ``cmpxchg``'s ordering.
+If the cmpxchg operation is marked as ``weak`` then a spurious failure is
+permitted: the operation may not write ``<new>`` even if the comparison
+matched.
+
+If the cmpxchg operation is strong (the default), the i1 value is 1 if and only
+if the value loaded equals ``cmp``.
+
+A successful ``cmpxchg`` is a read-modify-write instruction for the purpose of
+identifying release sequences. A failed ``cmpxchg`` is equivalent to an atomic
+load with an ordering parameter determined the second ordering parameter.
 
 Example:
 """"""""
@@ -5053,14 +5246,15 @@ Example:
 .. code-block:: llvm
 
     entry:
-      %orig = atomic load i32* %ptr unordered                   ; yields {i32}
+      %orig = atomic load i32* %ptr unordered                   ; yields i32
       br label %loop
 
     loop:
       %cmp = phi i32 [ %orig, %entry ], [%old, %loop]
       %squared = mul i32 %cmp, %cmp
-      %old = cmpxchg i32* %ptr, i32 %cmp, i32 %squared          ; yields {i32}
-      %success = icmp eq i32 %cmp, %old
+      %val_success = cmpxchg i32* %ptr, i32 %cmp, i32 %squared acq_rel monotonic ; yields  { i32, i1 }
+      %value_loaded = extractvalue { i32, i1 } %val_success, 0
+      %success = extractvalue { i32, i1 } %val_success, 1
       br i1 %success, label %done, label %loop
 
     done:
@@ -5076,7 +5270,7 @@ Syntax:
 
 ::
 
-      atomicrmw [volatile] <operation> <ty>* <pointer>, <ty> <value> [singlethread] <ordering>                   ; yields {ty}
+      atomicrmw [volatile] <operation> <ty>* <pointer>, <ty> <value> [singlethread] <ordering>                   ; yields ty
 
 Overview:
 """""""""
@@ -5137,7 +5331,7 @@ Example:
 
 .. code-block:: llvm
 
-      %old = atomicrmw add i32* %ptr, i32 1 acquire                        ; yields {i32}
+      %old = atomicrmw add i32* %ptr, i32 1 acquire                        ; yields i32
 
 .. _i_getelementptr:
 
@@ -5871,7 +6065,7 @@ Syntax:
 
 ::
 
-      <result> = icmp <cond> <ty> <op1>, <op2>   ; yields {i1} or {<N x i1>}:result
+      <result> = icmp <cond> <ty> <op1>, <op2>   ; yields i1 or <N x i1>:result
 
 Overview:
 """""""""
@@ -5962,7 +6156,7 @@ Syntax:
 
 ::
 
-      <result> = fcmp <cond> <ty> <op1>, <op2>     ; yields {i1} or {<N x i1>}:result
+      <result> = fcmp <cond> <ty> <op1>, <op2>     ; yields i1 or <N x i1>:result
 
 Overview:
 """""""""
@@ -6130,7 +6324,7 @@ Overview:
 """""""""
 
 The '``select``' instruction is used to choose one value based on a
-condition, without branching.
+condition, without IR-level branching.
 
 Arguments:
 """"""""""
@@ -6168,7 +6362,7 @@ Syntax:
 
 ::
 
-      <result> = [tail] call [cconv] [ret attrs] <ty> [<fnty>*] <fnptrval>(<function args>) [fn attrs]
+      <result> = [tail | musttail] call [cconv] [ret attrs] <ty> [<fnty>*] <fnptrval>(<function args>) [fn attrs]
 
 Overview:
 """""""""
@@ -6180,24 +6374,41 @@ Arguments:
 
 This instruction requires several arguments:
 
-#. The optional "tail" marker indicates that the callee function does
-   not access any allocas or varargs in the caller. Note that calls may
-   be marked "tail" even if they do not occur before a
-   :ref:`ret <i_ret>` instruction. If the "tail" marker is present, the
-   function call is eligible for tail call optimization, but `might not
-   in fact be optimized into a jump <CodeGenerator.html#tailcallopt>`_.
-   The code generator may optimize calls marked "tail" with either 1)
-   automatic `sibling call
-   optimization <CodeGenerator.html#sibcallopt>`_ when the caller and
-   callee have matching signatures, or 2) forced tail call optimization
-   when the following extra requirements are met:
+#. The optional ``tail`` and ``musttail`` markers indicate that the optimizers
+   should perform tail call optimization.  The ``tail`` marker is a hint that
+   `can be ignored <CodeGenerator.html#sibcallopt>`_.  The ``musttail`` marker
+   means that the call must be tail call optimized in order for the program to
+   be correct.  The ``musttail`` marker provides these guarantees:
+
+   #. The call will not cause unbounded stack growth if it is part of a
+      recursive cycle in the call graph.
+   #. Arguments with the :ref:`inalloca <attr_inalloca>` attribute are
+      forwarded in place.
+
+   Both markers imply that the callee does not access allocas or varargs from
+   the caller.  Calls marked ``musttail`` must obey the following additional
+   rules:
+
+   - The call must immediately precede a :ref:`ret <i_ret>` instruction,
+     or a pointer bitcast followed by a ret instruction.
+   - The ret instruction must return the (possibly bitcasted) value
+     produced by the call or void.
+   - The caller and callee prototypes must match.  Pointer types of
+     parameters or return types may differ in pointee type, but not
+     in address space.
+   - The calling conventions of the caller and callee must match.
+   - All ABI-impacting function attributes, such as sret, byval, inreg,
+     returned, and inalloca, must match.
+
+   Tail call optimization for calls marked ``tail`` is guaranteed to occur if
+   the following conditions are met:
 
    -  Caller and callee both have the calling convention ``fastcc``.
    -  The call is in tail position (ret immediately follows call and ret
       uses value of call or is void).
    -  Option ``-tailcallopt`` is enabled, or
       ``llvm::GuaranteedTailCallOpt`` is ``true``.
-   -  `Platform specific constraints are
+   -  `Platform-specific constraints are
       met. <CodeGenerator.html#tailcallopt>`_
 
 #. The optional "cconv" marker indicates which :ref:`calling
@@ -6250,7 +6461,7 @@ Example:
       call void %foo(i8 97 signext)
 
       %struct.A = type { i32, i8 }
-      %r = call %struct.A @foo()                        ; yields { 32, i8 }
+      %r = call %struct.A @foo()                        ; yields { i32, i8 }
       %gr = extractvalue %struct.A %r, 0                ; yields i32
       %gr1 = extractvalue %struct.A %r, 1               ; yields i8
       %Z = call void @foo() noreturn                    ; indicates that %foo never returns normally
@@ -6794,6 +7005,51 @@ Note that calling this intrinsic does not prevent function inlining or
 other aggressive transformations, so the value returned may not be that
 of the obvious source-language caller.
 
+.. _int_read_register:
+.. _int_write_register:
+
+'``llvm.read_register``' and '``llvm.write_register``' Intrinsics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare i32 @llvm.read_register.i32(metadata)
+      declare i64 @llvm.read_register.i64(metadata)
+      declare void @llvm.write_register.i32(metadata, i32 @value)
+      declare void @llvm.write_register.i64(metadata, i64 @value)
+      !0 = metadata !{metadata !"sp\00"}
+
+Overview:
+"""""""""
+
+The '``llvm.read_register``' and '``llvm.write_register``' intrinsics
+provides access to the named register. The register must be valid on
+the architecture being compiled to. The type needs to be compatible
+with the register being read.
+
+Semantics:
+""""""""""
+
+The '``llvm.read_register``' intrinsic returns the current value of the
+register, where possible. The '``llvm.write_register``' intrinsic sets
+the current value of the register, where possible.
+
+This is useful to implement named register global variables that need
+to always be mapped to a specific register, as is common practice on
+bare-metal programs including OS kernels.
+
+The compiler doesn't check for register availability or use of the used
+register in surrounding code, including inline assembly. Because of that,
+allocatable registers are not supported.
+
+Warning: So far it only works with the stack pointer on selected
+architectures (ARM, AArch64, PowerPC and x86_64). Significant amount of
+work is needed to support other registers and even more so, allocatable
+registers.
+
 .. _int_stacksave:
 
 '``llvm.stacksave``' Intrinsic
@@ -6952,6 +7208,39 @@ is lowered to a constant 0.
 
 Note that runtime support may be conditional on the privilege-level code is
 running at and the host platform.
+
+'``llvm.clear_cache``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare void @llvm.clear_cache(i8*, i8*)
+
+Overview:
+"""""""""
+
+The '``llvm.clear_cache``' intrinsic ensures visibility of modifications
+in the specified range to the execution unit of the processor. On
+targets with non-unified instruction and data cache, the implementation
+flushes the instruction cache.
+
+Semantics:
+""""""""""
+
+On platforms with coherent instruction and data caches (e.g. x86), this
+intrinsic is a nop. On platforms with non-coherent instruction and data
+cache (e.g. ARM, MIPS), the intrinsic is lowered either to appropriate
+instructions or a system call, if cache flushing requires special
+privileges.
+
+The default behavior is to emit a call to ``__clear_cache`` from the run
+time library.
+
+This instrinsic does *not* empty the instruction pipeline. Modifications
+of the current function are outside the scope of the intrinsic.
 
 Standard C Library Intrinsics
 -----------------------------
@@ -8334,7 +8623,7 @@ Examples:
 
 .. code-block:: llvm
 
-      %r2 = call float @llvm.fmuladd.f32(float %a, float %b, float %c) ; yields {float}:r2 = (a * b) + c
+      %r2 = call float @llvm.fmuladd.f32(float %a, float %b, float %c) ; yields float:r2 = (a * b) + c
 
 Half Precision Floating Point Intrinsics
 ----------------------------------------

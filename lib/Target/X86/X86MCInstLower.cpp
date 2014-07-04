@@ -13,14 +13,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86AsmPrinter.h"
+#include "X86RegisterInfo.h"
 #include "InstPrinter/X86ATTInstPrinter.h"
-#include "X86COFFMachineModuleInfo.h"
+#include "MCTargetDesc/X86BaseInfo.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/StackMaps.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Mangler.h"
-#include "llvm/IR/Type.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -31,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetFrameLowering.h"
 using namespace llvm;
 
 cl::opt<bool> DumpFrameInfoForStatepoint ("dump-frame-info-for-statepoint", cl::init(false));
@@ -126,7 +131,7 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
   case X86II::MO_DARWIN_NONLAZY_PIC_BASE: {
     MachineModuleInfoImpl::StubValueTy &StubSym =
       getMachOMMI().getGVStubEntry(Sym);
-    if (StubSym.getPointer() == 0) {
+    if (!StubSym.getPointer()) {
       assert(MO.isGlobal() && "Extern symbol not handled yet");
       StubSym =
         MachineModuleInfoImpl::
@@ -138,7 +143,7 @@ GetSymbolFromOperand(const MachineOperand &MO) const {
   case X86II::MO_DARWIN_HIDDEN_NONLAZY_PIC_BASE: {
     MachineModuleInfoImpl::StubValueTy &StubSym =
       getMachOMMI().getHiddenGVStubEntry(Sym);
-    if (StubSym.getPointer() == 0) {
+    if (!StubSym.getPointer()) {
       assert(MO.isGlobal() && "Extern symbol not handled yet");
       StubSym =
         MachineModuleInfoImpl::
@@ -174,7 +179,7 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
                                              MCSymbol *Sym) const {
   // FIXME: We would like an efficient form for this, so we don't have to do a
   // lot of extra uniquing.
-  const MCExpr *Expr = 0;
+  const MCExpr *Expr = nullptr;
   MCSymbolRefExpr::VariantKind RefKind = MCSymbolRefExpr::VK_None;
 
   switch (MO.getTargetFlags()) {
@@ -229,7 +234,7 @@ MCOperand X86MCInstLower::LowerSymbolOperand(const MachineOperand &MO,
     break;
   }
 
-  if (Expr == 0)
+  if (!Expr)
     Expr = MCSymbolRefExpr::Create(Sym, RefKind, Ctx);
 
   if (!MO.isJTI() && !MO.isMBB() && MO.getOffset())
@@ -303,12 +308,12 @@ static void SimplifyShortMoveForm(X86AsmPrinter &Printer, MCInst &Inst,
   unsigned RegOp = IsStore ? 0 : 5;
   unsigned AddrOp = AddrBase + 3;
   assert(Inst.getNumOperands() == 6 && Inst.getOperand(RegOp).isReg() &&
-         Inst.getOperand(AddrBase + 0).isReg() && // base
-         Inst.getOperand(AddrBase + 1).isImm() && // scale
-         Inst.getOperand(AddrBase + 2).isReg() && // index register
-         (Inst.getOperand(AddrOp).isExpr() ||     // address
-          Inst.getOperand(AddrOp).isImm())&&
-         Inst.getOperand(AddrBase + 4).isReg() && // segment
+         Inst.getOperand(AddrBase + X86::AddrBaseReg).isReg() &&
+         Inst.getOperand(AddrBase + X86::AddrScaleAmt).isImm() &&
+         Inst.getOperand(AddrBase + X86::AddrIndexReg).isReg() &&
+         Inst.getOperand(AddrBase + X86::AddrSegmentReg).isReg() &&
+         (Inst.getOperand(AddrOp).isExpr() ||
+          Inst.getOperand(AddrOp).isImm()) &&
          "Unexpected instruction!");
 
   // Check whether the destination register can be fixed.
@@ -328,14 +333,14 @@ static void SimplifyShortMoveForm(X86AsmPrinter &Printer, MCInst &Inst,
   }
 
   if (Absolute &&
-      (Inst.getOperand(AddrBase + 0).getReg() != 0 ||
-       Inst.getOperand(AddrBase + 2).getReg() != 0 ||
-       Inst.getOperand(AddrBase + 1).getImm() != 1))
+      (Inst.getOperand(AddrBase + X86::AddrBaseReg).getReg() != 0 ||
+       Inst.getOperand(AddrBase + X86::AddrScaleAmt).getImm() != 1 ||
+       Inst.getOperand(AddrBase + X86::AddrIndexReg).getReg() != 0))
     return;
 
   // If so, rewrite the instruction.
   MCOperand Saved = Inst.getOperand(AddrOp);
-  MCOperand Seg = Inst.getOperand(AddrBase + 4);
+  MCOperand Seg = Inst.getOperand(AddrBase + X86::AddrSegmentReg);
   Inst = MCInst();
   Inst.setOpcode(Opcode);
   Inst.addOperand(Saved);
@@ -813,6 +818,8 @@ static void LowerSTATEPOINT(MCStreamer &OS, StackMaps &SM,
 
   const MachineFrameInfo* MFI = MF->getFrameInfo();
   MachineModuleInfo &MMI = MF->getMMI();
+  const X86RegisterInfo *RegInfo =
+      static_cast<const X86RegisterInfo *>(MF->getTarget().getRegisterInfo());
   const MCRegisterInfo *MRI = MMI.getContext().getRegisterInfo();
 
   // Note: The callee saved information here includes only the registers which
@@ -820,25 +827,39 @@ static void LowerSTATEPOINT(MCStreamer &OS, StackMaps &SM,
   assert( MFI->isCalleeSavedInfoValid() && "must be valid by now");
   const std::vector<CalleeSavedInfo>& CSI = MFI->getCalleeSavedInfo();
 
-
   // pair< Register, Offset Of Spill Slot >
   std::vector< std::pair<unsigned, int64_t> > callee_pairs;
-  for (std::vector<CalleeSavedInfo>::const_iterator
-         I = CSI.begin(), E = CSI.end(); I != E; ++I) {
-    int64_t Offset;
-    unsigned Reg = I->getReg();
-    unsigned StackReg; // discarded
-    Offset = TFI->getFrameIndexReferenceForGC(*MF, I->getFrameIdx(), StackReg);
-    unsigned DwarfReg = MRI->getDwarfRegNum(Reg, true);
-    //errs() << "C.S. Reg: " << DwarfReg << ", Offset: " << Offset << "\n";
-    callee_pairs.push_back( std::make_pair(DwarfReg, Offset) );
+  if( MFI->hasVarSizedObjects() || RegInfo->needsStackRealignment(*MF) ) {
+    // If the frame size is variable, we may not be able to use fixed offsets
+    // from RSP to address CSRs (or even stack map variables!).  For the
+    // stack realignment case, we know that the realign region (which is
+    // variable in size) lives between RSP and the CSR spill slots.  We skip
+    // the CSR information here under the assumption that'll we'll bail after
+    // seeing a bogus StackSize from the StackMap.  For safety, we specify an
+    // obvious poison value in the callee_pairs field itself.  Long term, we
+    // will need to teach the runtime about non-RSP relative offsets for stack
+    // objects.  Vectorization (and spilling of vector registers under SSE),
+    // can create stack realignment needs in cases we'd like to support.
+    callee_pairs.push_back( std::make_pair(0xFFFF, 0xFFFFFFFF) );
+  } else {
+    for (std::vector<CalleeSavedInfo>::const_iterator
+           I = CSI.begin(), E = CSI.end(); I != E; ++I) {
+      int64_t Offset;
+      unsigned Reg = I->getReg();
+      unsigned StackReg; // discarded
+      Offset = TFI->getFrameIndexReferenceForGC(*MF, I->getFrameIdx(), StackReg);
+      assert( StackReg == RegInfo->getStackRegister() &&
+              "CSR constant offset addressing expected to use RSP!");
+      unsigned DwarfReg = MRI->getDwarfRegNum(Reg, true);
+      //errs() << "C.S. Reg: " << DwarfReg << ", Offset: " << Offset << "\n";
+      callee_pairs.push_back( std::make_pair(DwarfReg, Offset) );
+    }
   }
   // Record our statepoint node in the same section used by STACKMAP and PATCHPOINT
   // This is the internal routine TODO - create wrapper
   SM.recordStackMapOpers(MI, 0xABCDEF00, MI.operands_begin() + StartIdx,
                          MI.operands_end(),
                          false,
-                         MFI->getStackSize(),
                          &callee_pairs);
   
   if (OS.hasRawTextSupport()) {
@@ -940,6 +961,9 @@ static void LowerPATCHPOINT(MCStreamer &OS, StackMaps &SM,
 
 void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
   X86MCInstLower MCInstLowering(*MF, *this);
+  const X86RegisterInfo *RI =
+      static_cast<const X86RegisterInfo *>(TM.getRegisterInfo());
+
   switch (MI->getOpcode()) {
   case TargetOpcode::DBG_VALUE:
     llvm_unreachable("Should be handled target independently");
@@ -1045,6 +1069,37 @@ void X86AsmPrinter::EmitInstruction(const MachineInstr *MI) {
     EmitToStreamer(OutStreamer, MCInstBuilder(X86::MOV64rr)
       .addReg(X86::R10)
       .addReg(X86::RAX));
+    return;
+
+  case X86::SEH_PushReg:
+    OutStreamer.EmitWinCFIPushReg(RI->getSEHRegNum(MI->getOperand(0).getImm()));
+    return;
+
+  case X86::SEH_SaveReg:
+    OutStreamer.EmitWinCFISaveReg(RI->getSEHRegNum(MI->getOperand(0).getImm()),
+                                  MI->getOperand(1).getImm());
+    return;
+
+  case X86::SEH_SaveXMM:
+    OutStreamer.EmitWinCFISaveXMM(RI->getSEHRegNum(MI->getOperand(0).getImm()),
+                                  MI->getOperand(1).getImm());
+    return;
+
+  case X86::SEH_StackAlloc:
+    OutStreamer.EmitWinCFIAllocStack(MI->getOperand(0).getImm());
+    return;
+
+  case X86::SEH_SetFrame:
+    OutStreamer.EmitWinCFISetFrame(RI->getSEHRegNum(MI->getOperand(0).getImm()),
+                                   MI->getOperand(1).getImm());
+    return;
+
+  case X86::SEH_PushFrame:
+    OutStreamer.EmitWinCFIPushFrame(MI->getOperand(0).getImm());
+    return;
+
+  case X86::SEH_EndPrologue:
+    OutStreamer.EmitWinCFIEndProlog();
     return;
   }
 

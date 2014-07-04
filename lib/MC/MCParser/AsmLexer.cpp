@@ -22,8 +22,8 @@
 using namespace llvm;
 
 AsmLexer::AsmLexer(const MCAsmInfo &_MAI) : MAI(_MAI)  {
-  CurBuf = NULL;
-  CurPtr = NULL;
+  CurBuf = nullptr;
+  CurPtr = nullptr;
   isAtStartOfLine = true;
   AllowAtInIdentifier = !StringRef(MAI.getCommentString()).startswith("@");
 }
@@ -39,7 +39,7 @@ void AsmLexer::setBuffer(const MemoryBuffer *buf, const char *ptr) {
   else
     CurPtr = CurBuf->getBufferStart();
 
-  TokStart = 0;
+  TokStart = nullptr;
 }
 
 /// ReturnError - Set the error to the specified string at the specified
@@ -201,8 +201,8 @@ AsmToken AsmLexer::LexLineComment() {
     CurChar = getNextChar();
 
   if (CurChar == EOF)
-    return AsmToken(AsmToken::Eof, StringRef(CurPtr, 0));
-  return AsmToken(AsmToken::EndOfStatement, StringRef(CurPtr, 0));
+    return AsmToken(AsmToken::Eof, StringRef(TokStart, 0));
+  return AsmToken(AsmToken::EndOfStatement, StringRef(TokStart, 0));
 }
 
 static void SkipIgnoredIntegerSuffix(const char *&CurPtr) {
@@ -218,7 +218,7 @@ static void SkipIgnoredIntegerSuffix(const char *&CurPtr) {
 // Look ahead to search for first non-hex digit, if it's [hH], then we treat the
 // integer as a hexadecimal, possibly with leading zeroes.
 static unsigned doLookAhead(const char *&CurPtr, unsigned DefaultRadix) {
-  const char *FirstHex = 0;
+  const char *FirstHex = nullptr;
   const char *LookAhead = CurPtr;
   while (1) {
     if (isdigit(*LookAhead)) {

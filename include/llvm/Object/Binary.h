@@ -20,6 +20,7 @@
 
 namespace llvm {
 
+class LLVMContext;
 class MemoryBuffer;
 class StringRef;
 
@@ -31,16 +32,17 @@ private:
   Binary(const Binary &other) LLVM_DELETED_FUNCTION;
 
   unsigned int TypeID;
-  bool BufferOwned;
 
 protected:
-  MemoryBuffer *Data;
+  std::unique_ptr<MemoryBuffer> Data;
 
-  Binary(unsigned int Type, MemoryBuffer *Source, bool BufferOwned = true);
+  Binary(unsigned int Type, std::unique_ptr<MemoryBuffer> Source);
 
   enum {
     ID_Archive,
     ID_MachOUniversalBinary,
+    ID_IR, // LLVM IR
+
     // Object and children.
     ID_StartObjects,
     ID_COFF,
@@ -76,6 +78,7 @@ public:
   virtual ~Binary();
 
   StringRef getData() const;
+  MemoryBuffer *releaseBuffer() { return Data.release(); }
   StringRef getFileName() const;
 
   // Cast methods.
@@ -84,6 +87,10 @@ public:
   // Convenience methods
   bool isObject() const {
     return TypeID > ID_StartObjects && TypeID < ID_EndObjects;
+  }
+
+  bool isSymbolic() const {
+    return isIR() || isObject();
   }
 
   bool isArchive() const {
@@ -106,6 +113,10 @@ public:
     return TypeID == ID_COFF;
   }
 
+  bool isIR() const {
+    return TypeID == ID_IR;
+  }
+
   bool isLittleEndian() const {
     return !(TypeID == ID_ELF32B || TypeID == ID_ELF64B ||
              TypeID == ID_MachO32B || TypeID == ID_MachO64B);
@@ -117,9 +128,8 @@ public:
 /// @param Source The data to create the Binary from. Ownership is transferred
 ///        to the Binary if successful. If an error is returned,
 ///        Source is destroyed by createBinary before returning.
-ErrorOr<Binary *> createBinary(MemoryBuffer *Source,
-                               sys::fs::file_magic Type =
-                                   sys::fs::file_magic::unknown);
+ErrorOr<Binary *> createBinary(std::unique_ptr<MemoryBuffer> &Source,
+                               LLVMContext *Context = nullptr);
 
 ErrorOr<Binary *> createBinary(StringRef Path);
 }

@@ -48,6 +48,9 @@ type llbuilder
     See the [llvm::MemoryBuffer] class. *)
 type llmemorybuffer
 
+(** The kind id of metadata attached to an instruction. *)
+type llmdkind
+
 (** The kind of an [lltype], the result of [classify_type ty]. See the
     [llvm::Type::TypeID] enumeration. *)
 module TypeKind : sig
@@ -392,7 +395,7 @@ val global_context : unit -> llcontext
 (** [mdkind_id context name] returns the MDKind ID that corresponds to the
     name [name] in the context [context].  See the function
     [llvm::LLVMContext::getMDKindID]. *)
-val mdkind_id : llcontext -> string -> int
+val mdkind_id : llcontext -> string -> llmdkind
 
 
 (** {6 Modules} *)
@@ -770,15 +773,15 @@ val has_metadata : llvalue -> bool
 (** [metadata i kind] optionally returns the metadata associated with the
     kind [kind] in the instruction [i] See the function
     [llvm::Instruction::getMetadata]. *)
-val metadata : llvalue -> int -> llvalue option
+val metadata : llvalue -> llmdkind -> llvalue option
 
 (** [set_metadata i kind md] sets the metadata [md] of kind [kind] in the
     instruction [i]. See the function [llvm::Instruction::setMetadata]. *)
-val set_metadata : llvalue -> int -> llvalue -> unit
+val set_metadata : llvalue -> llmdkind -> llvalue -> unit
 
 (** [clear_metadata i kind] clears the metadata of kind [kind] in the
     instruction [i]. See the function [llvm::Instruction::setMetadata]. *)
-val clear_metadata : llvalue -> int -> unit
+val clear_metadata : llvalue -> llmdkind -> unit
 
 
 (** {7 Operations on metadata} *)
@@ -1048,12 +1051,12 @@ val const_lshr : llvalue -> llvalue -> llvalue
     See the method [llvm::ConstantExpr::getAShr]. *)
 val const_ashr : llvalue -> llvalue -> llvalue
 
-(** [const_gep pc indices] returns the constant [getElementPtr] of [p1] with the
+(** [const_gep pc indices] returns the constant [getElementPtr] of [pc] with the
     constant integers indices from the array [indices].
     See the method [llvm::ConstantExpr::getGetElementPtr]. *)
 val const_gep : llvalue -> llvalue array -> llvalue
 
-(** [const_in_bounds_gep pc indices] returns the constant [getElementPtr] of [p1]
+(** [const_in_bounds_gep pc indices] returns the constant [getElementPtr] of [pc]
     with the constant integers indices from the array [indices].
     See the method [llvm::ConstantExpr::getInBoundsGetElementPtr]. *)
 val const_in_bounds_gep : llvalue -> llvalue array -> llvalue
@@ -2357,7 +2360,7 @@ val build_insertelement : llvalue -> llvalue -> llvalue -> string ->
 val build_shufflevector : llvalue -> llvalue -> llvalue -> string ->
                                llbuilder -> llvalue
 
-(** [build_insertvalue agg idx name b] creates a
+(** [build_extractvalue agg idx name b] creates a
     [%name = extractvalue %agg, %idx]
     instruction at the position specified by the instruction builder [b].
     See the method [llvm::LLVMBuilder::CreateExtractValue]. *)

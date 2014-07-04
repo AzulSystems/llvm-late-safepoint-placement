@@ -1,4 +1,4 @@
-; RUN: opt %s  -place-backedge-safepoints -place-call-safepoints -S 2>&1 | FileCheck %s
+; RUN: opt %s  -place-safepoints -spp-no-entry -S 2>&1 | FileCheck %s
 
 ; This test is basically ensuring that having a relocation encounter a new safepoint
 ; works correctly.  We currently stop before this can happen, but an alternate approach
@@ -24,22 +24,22 @@ safepointed:                                      ; preds = %do_safepoint, %entr
 declare  void @"VMRuntime::poll_at_safepoint_static"([1768 x i8]*)
 
 ; Function Attrs: nounwind readonly
-declare i32 @llvm.jvmstate_16(i32, i32, i32, i32, %jObject addrspace(1)*, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i8*, i8*, i8*, i8*, i8*, i8*, i8*) #2
+declare i32 @llvm.jvmstate_16(i32, i32, i32, i32, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i32, %jObject addrspace(1)*, i32, i32, i32, %jObject addrspace(1)*, i32, i32, i32, i32, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*) #2
 
 declare  %jObject addrspace(1)* @"VMRuntime::newarray"([1768 x i8]*, i32, i32) #3
 
 ; Function Attrs: nounwind readonly
-declare i32 @llvm.jvmstate_36(i32, i32, i32, i32, i32, %jObject addrspace(1)*, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i64, i8*, i32, i32, i8*, i8*, i8*) #2
+declare i32 @llvm.jvmstate_36(i32, i32, i32, i32, i32, i32, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i32, %jObject addrspace(1)*, i32, i32, i32, %jObject addrspace(1)*, i32, i32, i32, i32, i32, i64, i32, i8*, i32, i32, i32, i32, i32, i8*, i32, i8*, i32, i8*) #2
 
 ; Function Attrs: nounwind
 define  %jObject addrspace(1)* @"java.math.BigInteger::multiplyToLen"([160 x i8]* nocapture readnone %method, %jObject addrspace(1)* readonly %arg, %jObject addrspace(1)* %arg1, i32 %arg2, %jObject addrspace(1)* %arg3, i32 %arg4, %jObject addrspace(1)* %arg5) #4 {
 bci_0:
-  %tmp = tail call i32 @llvm.jvmstate_16(i32 26, i32 0, i32 15, i32 0, %jObject addrspace(1)* %arg, %jObject addrspace(1)* %arg1, i32 %arg2, %jObject addrspace(1)* %arg3, i32 %arg4, %jObject addrspace(1)* %arg5, i32 undef, i32 undef, i8* null, i8* null, i8* null, i8* null, i8* null, i8* null, i8* null)
+  %tmp = tail call i32 @llvm.jvmstate_16(i32 26, i32 0, i32 15, i32 0, i32 0, %jObject addrspace(1)* %arg, i32 0, %jObject addrspace(1)* %arg1, i32 0, i32 %arg2, i32 0, %jObject addrspace(1)* %arg3, i32 0, i32 %arg4, i32 0, %jObject addrspace(1)* %arg5, i32 0, i32 undef, i32 0, i32 undef, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null)
   %tmp6 = tail call  %jObject addrspace(1)* @"VMRuntime::newarray"([1768 x i8]* undef, i32 10, i32 undef) #5
   br label %not_zero48
 
 not_zero48:                                       ; preds = %not_zero48, %bci_0
-  %tmp7 = tail call i32 @llvm.jvmstate_36(i32 59, i32 1, i32 15, i32 0, i32 undef, %jObject addrspace(1)* %arg, %jObject addrspace(1)* %arg1, i32 %arg2, %jObject addrspace(1)* %arg3, i32 %arg4, %jObject addrspace(1)* %tmp6, i32 undef, i32 undef, i64 undef, i8* null, i32 undef, i32 undef, i8* null, i8* null, i8* null)
+  %tmp7 = tail call i32 @llvm.jvmstate_36(i32 59, i32 1, i32 15, i32 0, i32 0, i32 undef, i32 0, %jObject addrspace(1)* %arg, i32 0, %jObject addrspace(1)* %arg1, i32 0, i32 %arg2, i32 0, %jObject addrspace(1)* %arg3, i32 0, i32 %arg4, i32 0, %jObject addrspace(1)* %tmp6, i32 0, i32 undef, i32 0, i32 undef, i32 0, i64 undef, i32 0, i8* null, i32 0, i32 undef, i32 0, i32 undef, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null)
 ; CHECK: poll.exit
 ; CHECK: not_zero48
   br label %not_zero48

@@ -36,6 +36,8 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "bugpoint"
+
 namespace llvm {
   cl::opt<bool>
   KeepTemps("bugpoint-keep-temps",
@@ -76,7 +78,7 @@ bool BugDriver::writeProgramToFile(const std::string &Filename, int FD,
 bool BugDriver::writeProgramToFile(const std::string &Filename,
                                    const Module *M) const {
   std::string ErrInfo;
-  tool_output_file Out(Filename.c_str(), ErrInfo, sys::fs::F_Binary);
+  tool_output_file Out(Filename.c_str(), ErrInfo, sys::fs::F_None);
   if (ErrInfo.empty())
     return writeProgramToFileAux(Out, M);
   return true;
@@ -132,7 +134,7 @@ bool BugDriver::runPasses(Module *Program,
   // setup the output file name
   outs().flush();
   SmallString<128> UniqueFilename;
-  error_code EC = sys::fs::createUniqueFile(
+  std::error_code EC = sys::fs::createUniqueFile(
       OutputPrefix + "-output-%%%%%%%.bc", UniqueFilename);
   if (EC) {
     errs() << getToolName() << ": Error making unique filename: "
@@ -199,7 +201,7 @@ bool BugDriver::runPasses(Module *Program,
   Args.push_back(InputFilename.c_str());
   for (unsigned i = 0; i < NumExtraArgs; ++i)
     Args.push_back(*ExtraArgs);
-  Args.push_back(0);
+  Args.push_back(nullptr);
 
   DEBUG(errs() << "\nAbout to run:\t";
         for (unsigned i = 0, e = Args.size()-1; i != e; ++i)
@@ -215,12 +217,12 @@ bool BugDriver::runPasses(Module *Program,
 
   // Redirect stdout and stderr to nowhere if SilencePasses is given
   StringRef Nowhere;
-  const StringRef *Redirects[3] = {0, &Nowhere, &Nowhere};
+  const StringRef *Redirects[3] = {nullptr, &Nowhere, &Nowhere};
 
   std::string ErrMsg;
-  int result = sys::ExecuteAndWait(Prog, Args.data(), 0,
-                                   (SilencePasses ? Redirects : 0), Timeout,
-                                   MemoryLimit, &ErrMsg);
+  int result = sys::ExecuteAndWait(Prog, Args.data(), nullptr,
+                                   (SilencePasses ? Redirects : nullptr),
+                                   Timeout, MemoryLimit, &ErrMsg);
 
   // If we are supposed to delete the bitcode file or if the passes crashed,
   // remove it now.  This may fail if the file was never created, but that's
@@ -270,11 +272,11 @@ Module *BugDriver::runPassesOn(Module *M,
       EmitProgressBitcode(M, "pass-error",  false);
       exit(debugOptimizerCrash());
     }
-    return 0;
+    return nullptr;
   }
 
   Module *Ret = ParseInputFile(BitcodeResult, Context);
-  if (Ret == 0) {
+  if (!Ret) {
     errs() << getToolName() << ": Error reading bitcode file '"
            << BitcodeResult << "'!\n";
     exit(1);

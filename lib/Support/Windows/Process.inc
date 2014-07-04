@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/WindowsError.h"
 #include <malloc.h>
 
 // The Windows.h header must be after LLVM and standard headers.
@@ -47,7 +49,6 @@
 using namespace llvm;
 using namespace sys;
 
-
 process::id_type self_process::get_id() {
   return GetCurrentProcessId();
 }
@@ -82,16 +83,14 @@ TimeValue self_process::get_system_time() const {
   return getTimeValueFromFILETIME(KernelTime);
 }
 
-// This function retrieves the page size using GetSystemInfo and is present
-// solely so it can be called once to initialize the self_process member below.
+// This function retrieves the page size using GetNativeSystemInfo() and is
+// present solely so it can be called once to initialize the self_process member
+// below.
 static unsigned getPageSize() {
-  // NOTE: A 32-bit application running under WOW64 is supposed to use
-  // GetNativeSystemInfo.  However, this interface is not present prior
-  // to Windows XP so to use it requires dynamic linking.  It is not clear
-  // how this affects the reported page size, if at all.  One could argue
-  // that LLVM ought to run as 64-bits on a 64-bit system, anyway.
+  // GetNativeSystemInfo() provides the physical page size which may differ
+  // from GetSystemInfo() in 32-bit applications running under WOW64.
   SYSTEM_INFO info;
-  GetSystemInfo(&info);
+  GetNativeSystemInfo(&info);
   // FIXME: FileOffset in MapViewOfFile() should be aligned to not dwPageSize,
   // but dwAllocationGranularity.
   return static_cast<unsigned>(info.dwPageSize);
@@ -154,7 +153,7 @@ void Process::PreventCoreFiles() {
 Optional<std::string> Process::GetEnv(StringRef Name) {
   // Convert the argument to UTF-16 to pass it to _wgetenv().
   SmallVector<wchar_t, 128> NameUTF16;
-  if (error_code ec = windows::UTF8ToUTF16(Name, NameUTF16))
+  if (windows::UTF8ToUTF16(Name, NameUTF16))
     return None;
 
   // Environment variable can be encoded in non-UTF8 encoding, and there's no
@@ -175,17 +174,21 @@ Optional<std::string> Process::GetEnv(StringRef Name) {
 
   // Convert the result from UTF-16 to UTF-8.
   SmallVector<char, MAX_PATH> Res;
-  if (error_code ec = windows::UTF16ToUTF8(Buf.data(), Size, Res))
+  if (windows::UTF16ToUTF8(Buf.data(), Size, Res))
     return None;
   return std::string(Res.data());
 }
 
-error_code
+static std::error_code windows_error(DWORD E) {
+  return mapWindowsError(E);
+}
+
+std::error_code
 Process::GetArgumentVector(SmallVectorImpl<const char *> &Args,
                            ArrayRef<const char *>,
                            SpecificBumpPtrAllocator<char> &ArgAllocator) {
   int NewArgCount;
-  error_code ec;
+  std::error_code ec;
 
   wchar_t **UnicodeCommandLine = CommandLineToArgvW(GetCommandLineW(),
                                                     &NewArgCount);
@@ -210,7 +213,7 @@ Process::GetArgumentVector(SmallVectorImpl<const char *> &Args,
   if (ec)
     return ec;
 
-  return error_code::success();
+  return std::error_code();
 }
 
 bool Process::StandardInIsUserInput() {
@@ -365,12 +368,12 @@ unsigned Process::GetRandomNumber() {
   HCRYPTPROV HCPC;
   if (!::CryptAcquireContextW(&HCPC, NULL, NULL, PROV_RSA_FULL,
                               CRYPT_VERIFYCONTEXT))
-    assert(false && "Could not acquire a cryptographic context");
+    report_fatal_error("Could not acquire a cryptographic context");
 
   ScopedCryptContext CryptoProvider(HCPC);
   unsigned Ret;
   if (!::CryptGenRandom(CryptoProvider, sizeof(Ret),
                         reinterpret_cast<BYTE *>(&Ret)))
-    assert(false && "Could not generate a random number");
+    report_fatal_error("Could not generate a random number");
   return Ret;
 }

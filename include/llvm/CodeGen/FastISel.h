@@ -17,22 +17,23 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
-#include "llvm/CodeGen/ValueTypes.h"
 
 namespace llvm {
 
 class AllocaInst;
 class Constant;
 class ConstantFP;
+class CallInst;
+class DataLayout;
 class FunctionLoweringInfo;
 class Instruction;
 class LoadInst;
+class MVT;
 class MachineConstantPool;
+class MachineFrameInfo;
 class MachineFunction;
 class MachineInstr;
-class MachineFrameInfo;
 class MachineRegisterInfo;
-class DataLayout;
 class TargetInstrInfo;
 class TargetLibraryInfo;
 class TargetLowering;
@@ -343,6 +344,12 @@ protected:
 
   unsigned createResultReg(const TargetRegisterClass *RC);
 
+  /// Try to constrain Op so that it is usable by argument OpNum of the provided
+  /// MCInstrDesc. If this fails, create a new virtual register in the correct
+  /// class and COPY the value there.
+  unsigned constrainOperandRegClass(const MCInstrDesc &II, unsigned Op,
+                                    unsigned OpNum);
+
   /// Emit a constant in a register using target-specific logic, such as
   /// constant pool loads.
   virtual unsigned TargetMaterializeConstant(const Constant* C) {
@@ -366,6 +373,12 @@ protected:
   /// - \c Add is in the same basic block as \c GEP, and
   /// - \c Add has a constant operand.
   bool canFoldAddIntoGEP(const User *GEP, const Value *Add);
+
+  /// Test whether the given value has exactly one use.
+  bool hasTrivialKill(const Value *V) const;
+
+  /// \brief Create a machine mem operand from the given instruction.
+  MachineMemOperand *createMachineMemOperandFor(const Instruction *I) const;
 
 private:
   bool SelectBinaryOp(const User *I, unsigned ISDOpcode);
@@ -403,8 +416,8 @@ private:
   /// heavy instructions like calls.
   void flushLocalValueMap();
 
-  /// Test whether the given value has exactly one use.
-  bool hasTrivialKill(const Value *V) const;
+  bool addStackMapLiveVars(SmallVectorImpl<MachineOperand> &Ops,
+                           const CallInst *CI, unsigned StartIdx);
 };
 
 }

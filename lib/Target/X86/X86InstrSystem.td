@@ -19,7 +19,7 @@ let Defs = [RAX, RDX] in
               TB;
 
 let Defs = [RAX, RCX, RDX] in
-  def RDTSCP : I<0x01, MRM_F9, (outs), (ins), "rdtscp", []>, TB;
+  def RDTSCP : I<0x01, MRM_F9, (outs), (ins), "rdtscp", [(X86rdtscp)]>, TB;
 
 // CPU flow control instructions
 
@@ -61,8 +61,8 @@ def SYSENTER : I<0x34, RawFrm, (outs), (ins), "sysenter", [],
 
 def SYSEXIT   : I<0x35, RawFrm, (outs), (ins), "sysexit{l}", [],
                  IIC_SYS_ENTER_EXIT>, TB;
-def SYSEXIT64 :RI<0x35, RawFrm, (outs), (ins), "sysexit{q}", []>, TB,
-                Requires<[In64BitMode]>;
+def SYSEXIT64 :RI<0x35, RawFrm, (outs), (ins), "sysexit{q}", [],
+                 IIC_SYS_ENTER_EXIT>, TB, Requires<[In64BitMode]>;
 
 def IRET16 : I<0xcf, RawFrm, (outs), (ins), "iret{w}", [], IIC_IRET>, OpSize16;
 def IRET32 : I<0xcf, RawFrm, (outs), (ins), "iret{l|d}", [], IIC_IRET>,
@@ -116,12 +116,6 @@ let Uses = [EAX] in
 def OUT32ir : Ii8<0xE7, RawFrm, (outs), (ins i8imm:$port),
                   "out{l}\t{%eax, $port|$port, eax}", [], IIC_OUT_IR>, OpSize32;
 
-def IN8  : I<0x6C, RawFrmDst, (outs dstidx8:$dst), (ins),
-             "insb\t{%dx, $dst|$dst, dx}", [], IIC_INS>;
-def IN16 : I<0x6D, RawFrmDst, (outs dstidx16:$dst), (ins),
-             "insw\t{%dx, $dst|$dst, dx}", [], IIC_INS>,  OpSize16;
-def IN32 : I<0x6D, RawFrmDst, (outs dstidx32:$dst), (ins),
-             "ins{l|d}\t{%dx, $dst|$dst, dx}", [], IIC_INS>, OpSize32;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
@@ -445,7 +439,10 @@ def LLDT16m : I<0x00, MRM2m, (outs), (ins i16mem:$src),
 let SchedRW = [WriteSystem] in {
 def WRMSR : I<0x30, RawFrm, (outs), (ins), "wrmsr", [], IIC_WRMSR>, TB;
 def RDMSR : I<0x32, RawFrm, (outs), (ins), "rdmsr", [], IIC_RDMSR>, TB;
-def RDPMC : I<0x33, RawFrm, (outs), (ins), "rdpmc", [], IIC_RDPMC>, TB;
+
+let Defs = [RAX, RDX], Uses = [ECX] in
+  def RDPMC : I<0x33, RawFrm, (outs), (ins), "rdpmc", [(X86rdpmc)], IIC_RDPMC>,
+              TB;
 
 def SMSW16r : I<0x01, MRM4r, (outs GR16:$dst), (ins), 
                 "smsw{w}\t$dst", [], IIC_SMSW>, OpSize16, TB;

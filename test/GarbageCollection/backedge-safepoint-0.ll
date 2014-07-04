@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/Inputs/lsp-library.ll -S | opt -place-backedge-safepoints -spp-all-functions -S | FileCheck %s
+; RUN: llvm-link %s %p/Inputs/lsp-library.ll -S | opt -place-safepoints -spp-no-call -spp-no-entry -spp-all-functions -S | FileCheck %s
 
 ; CHECK: %current = phi i64* [ %obj, %entry ], [ %next.relocated, %loop ]
 

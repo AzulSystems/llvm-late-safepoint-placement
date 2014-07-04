@@ -185,13 +185,13 @@ RecognizableInstr::RecognizableInstr(DisassemblerTables &tables,
     return;
   }
 
-  OpPrefix = byteFromRec(Rec->getValueAsDef("OpPrefix"), "Value");
-  OpMap    = byteFromRec(Rec->getValueAsDef("OpMap"), "Value");
+  OpPrefix = byteFromRec(Rec, "OpPrefixBits");
+  OpMap    = byteFromRec(Rec, "OpMapBits");
   Opcode   = byteFromRec(Rec, "Opcode");
   Form     = byteFromRec(Rec, "FormBits");
-  Encoding = byteFromRec(Rec->getValueAsDef("OpEnc"), "Value");
+  Encoding = byteFromRec(Rec, "OpEncBits");
 
-  OpSize           = byteFromRec(Rec->getValueAsDef("OpSize"), "Value");
+  OpSize           = byteFromRec(Rec, "OpSizeBits");
   HasAdSizePrefix  = Rec->getValueAsBit("hasAdSizePrefix");
   HasREX_WPrefix   = Rec->getValueAsBit("hasREX_WPrefix");
   HasVEX_4V        = Rec->getValueAsBit("hasVEX_4V");
@@ -788,7 +788,7 @@ void RecognizableInstr::emitDecodePath(DisassemblerTables &tables) const {
 
   OpcodeType    opcodeType  = (OpcodeType)-1;
 
-  ModRMFilter*  filter      = NULL;
+  ModRMFilter*  filter      = nullptr;
   uint8_t       opcodeToSet = 0;
 
   switch (OpMap) {

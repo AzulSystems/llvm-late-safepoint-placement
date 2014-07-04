@@ -92,9 +92,9 @@ protected:
 };
 
 template <typename T>
-typename T::key_type *const DenseMapTest<T>::dummy_key_ptr = 0;
+typename T::key_type *const DenseMapTest<T>::dummy_key_ptr = nullptr;
 template <typename T>
-typename T::mapped_type *const DenseMapTest<T>::dummy_value_ptr = 0;
+typename T::mapped_type *const DenseMapTest<T>::dummy_value_ptr = nullptr;
 
 // Register these types for testing.
 typedef ::testing::Types<DenseMap<uint32_t, uint32_t>,
@@ -209,6 +209,34 @@ TYPED_TEST(DenseMapTest, CopyConstructorTest) {
   EXPECT_EQ(this->getValue(), copyMap[this->getKey()]);
 }
 
+// Test copy constructor method where SmallDenseMap isn't small.
+TYPED_TEST(DenseMapTest, CopyConstructorNotSmallTest) {
+  for (int Key = 0; Key < 5; ++Key)
+    this->Map[this->getKey(Key)] = this->getValue(Key);
+  TypeParam copyMap(this->Map);
+
+  EXPECT_EQ(5u, copyMap.size());
+  for (int Key = 0; Key < 5; ++Key)
+    EXPECT_EQ(this->getValue(Key), copyMap[this->getKey(Key)]);
+}
+
+// Test copying from a default-constructed map.
+TYPED_TEST(DenseMapTest, CopyConstructorFromDefaultTest) {
+  TypeParam copyMap(this->Map);
+
+  EXPECT_TRUE(copyMap.empty());
+}
+
+// Test copying from an empty map where SmallDenseMap isn't small.
+TYPED_TEST(DenseMapTest, CopyConstructorFromEmptyTest) {
+  for (int Key = 0; Key < 5; ++Key)
+    this->Map[this->getKey(Key)] = this->getValue(Key);
+  this->Map.clear();
+  TypeParam copyMap(this->Map);
+
+  EXPECT_TRUE(copyMap.empty());
+}
+
 // Test assignment operator method
 TYPED_TEST(DenseMapTest, AssignmentTest) {
   this->Map[this->getKey()] = this->getValue();
@@ -317,7 +345,7 @@ TEST(DenseMapCustomTest, FindAsTest) {
   EXPECT_EQ(3u, map.size());
 
   // Normal lookup tests
-  EXPECT_EQ(1, map.count(1));
+  EXPECT_EQ(1u, map.count(1));
   EXPECT_EQ(1u, map.find(0)->second);
   EXPECT_EQ(2u, map.find(1)->second);
   EXPECT_EQ(3u, map.find(2)->second);

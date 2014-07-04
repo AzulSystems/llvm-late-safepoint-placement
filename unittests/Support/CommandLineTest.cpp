@@ -23,7 +23,7 @@ class TempEnvVar {
   TempEnvVar(const char *name, const char *value)
       : name(name) {
     const char *old_value = getenv(name);
-    EXPECT_EQ(NULL, old_value) << old_value;
+    EXPECT_EQ(nullptr, old_value) << old_value;
 #if HAVE_SETENV
     setenv(name, value, true);
 #else
@@ -147,7 +147,7 @@ TEST(CommandLineTest, UseOptionCategory) {
 }
 
 class StrDupSaver : public cl::StringSaver {
-  const char *SaveString(const char *Str) LLVM_OVERRIDE {
+  const char *SaveString(const char *Str) override {
     return strdup(Str);
   }
 };

@@ -24,16 +24,15 @@ Overview:
 - A collection of unit and integration tests can be found in:
     tests/GarbageCollection
 
-This branch was branched from an snapshot of LLVM taken on Feb 20th, 2014.  This was the last point we could find where the code would build with either C++03 or C++11.  We intend to update the snapshot to TOT in the near future, but didn't want to delay sharing the changes.
+The most recent merge into this public branch was performed using a baseline of July 1st, 2014.  
 
 You can see the entirety of the changes by running the following command:
 git diff pristine...master
 
 Known Issues:
-- The safepoint insertion logic has corner cases when dealing with multiple safepoints in a single function and complex control flow.  Any such issues will trigger a failure of the SafepointIRVerifier (which you should run!)  In retrospect, the one-at-a-time approach taken in this code was a mistake.  Attempting the insertion of each safepoint independently greatly complicates the invariants required.  We will be re-implementing this as a single pass which inserts all safepoints at once in the next few weeks.
 - Handling for safepoints at invokes (rather than calls) is incomplete.  
 - The repository also includes other pieces of functionality - mostly because trying to separate them was in-feasible - which are not part of the garbage collection functionality.  In particular, the code around abstract VM states for deoptimization is fairly rough and is likely to be revised heavily.
-- Only configure/make is supported, not CMake.  You must pass "--enable-shared" to configure.  Some tests are expected to fail: 1 bugpoint test, 1 codegen test, and 7 DebugIR tests
+- Only configure/make is supported, not CMake.  You must pass "--enable-shared" to configure.
+
 
 Questions, suggestions, and other feedback can be sent to either Philip Reames (listmail @ full name.com ) or Sanjoy Das ( sanjoy @ azul systems com).
-

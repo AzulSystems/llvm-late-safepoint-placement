@@ -20,9 +20,13 @@ using namespace llvm;
 
 /// initializeCodeGen - Initialize all passes linked into the CodeGen library.
 void llvm::initializeCodeGen(PassRegistry &Registry) {
+  initializeAtomicExpandLoadLinkedPass(Registry);
   initializeBasicTTIPass(Registry);
   initializeBranchFolderPassPass(Registry);
+  initializeCodeGenPreparePass(Registry);
   initializeDeadMachineInstructionElimPass(Registry);
+  // machine level safepoint verifier
+  initializeSafepointMachineVerifierPass(Registry);
   initializeEarlyIfConverterPass(Registry);
   initializeExpandPostRAPass(Registry);
   initializeExpandISelPseudosPass(Registry);

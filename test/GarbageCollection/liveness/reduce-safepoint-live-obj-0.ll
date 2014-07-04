@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-backedge-safepoints -spp-all-functions -S 
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -spp-no-entry -spp-no-call -place-safepoints -spp-all-functions -S 
 
 define i64 @test(i64* %obj, i64 %tmp) {
 entry:

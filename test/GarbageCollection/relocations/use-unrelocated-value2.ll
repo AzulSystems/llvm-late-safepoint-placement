@@ -1,4 +1,4 @@
-; RUN: opt %s  -place-backedge-safepoints -place-call-safepoints -spp-all-functions -verify -S 2>&1 | FileCheck %s
+; RUN: opt %s  -place-safepoints -spp-no-entry -spp-all-functions -verify -S 2>&1 | FileCheck %s
 
 ; This is simpilied from java.io.UnixFileSystem::canonicalize
 ; It is not a failing test case, but just added for better test when we try to improve the relocation implementation.
@@ -45,7 +45,7 @@ bci_134-aload_2.thread:                           ; preds = %bci_45-aload_0, %no
   br label %bci_138-aload_0
 
 bci_138-aload_0:                                  ; preds = %bci_134-aload_2.thread, %not_zero82
-;CHECK: %relocated = phi %jObject addrspace(1)* [ %relocated1, %bci_134-aload_2.thread ], [ %3, %not_zero82 ], !is_relocation_phi !1, !is_base_value !1
+;CHECK: %relocated = phi %jObject addrspace(1)* [ %relocated2, %bci_134-aload_2.thread ], [ %3, %not_zero82 ], !is_relocation_phi !1
   %3 = tail call i1 undef(%jObject addrspace(1)* %0) #8
   unreachable
 }

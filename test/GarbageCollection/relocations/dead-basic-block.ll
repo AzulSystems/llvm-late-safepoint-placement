@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -spp-all-functions -place-call-safepoints -verify-safepoint-ir -S
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -spp-all-functions -place-safepoints -spp-no-entry -spp-no-backedge  -verify-safepoint-ir -S
 
 ;; Source: com.sun.crypto.provider.DESCrypt::cipherBlock
 

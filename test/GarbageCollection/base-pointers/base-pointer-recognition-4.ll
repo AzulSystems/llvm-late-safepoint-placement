@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-call-safepoints -place-backedge-safepoints -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -spp-no-entry -place-safepoints -spp-all-functions -spp-print-base-pointers -S 2>&1 | FileCheck %s
 
 ; CHECK: derived %obj_to_consume base %base_phi
 
@@ -11,8 +11,8 @@ entry:
 
 loop:
 ; CHECK: loop:
-; CHECK-NEXT:  %safepoint_token = call i32 (i64* ()*, i32, i32, i32, i32, i32, i32, ...)* @llvm.statepoint.p0f_p0i64f(i64* ()* @generate_obj, i32 0, i32 0, i32 -1, i32 0, i32 0, i3
-; CHECK-NEXT:  %obj1 = call i64* @llvm.gc.result.ptr.p0i64(i32 %safepoint_token)
+; CHECK:  %safepoint_token1 = call i32 (i64* ()*, i32, i32, i32, i32, i32, i32, ...)* @llvm.statepoint.p0f_p0i64f(i64* ()* @generate_obj, i32 0, i32 0, i32 -1, i32 0, i32 0, i3
+; CHECK-NEXT:  %obj2 = call i64* @llvm.gc.result.ptr.p0i64(i32 %safepoint_token1)
   %obj = call i64* @generate_obj()
   switch i32 %condition, label %dest_a [ i32 0, label %dest_b 
   	     		       	   i32 1, label %dest_c ]
@@ -26,8 +26,8 @@ dest_c:
 
 merge:
 ; CHECK: merge:
-; CHECK:  %base_phi = phi i64* [ %obj1, %dest_a ], [ null, %dest_b ], [ null, %dest_c ]
-; CHECK:  %obj_to_consume = phi i64* [ %obj1, %dest_a ], [ null, %dest_b ], [ null, %dest_c ]
+; CHECK:  %base_phi = phi i64* [ %obj2, %dest_a ], [ null, %dest_b ], [ null, %dest_c ]
+; CHECK:  %obj_to_consume = phi i64* [ %obj2, %dest_a ], [ null, %dest_b ], [ null, %dest_c ]
 
   %obj_to_consume = phi i64* [ %obj, %dest_a ] , [ null, %dest_b ], [ null, %dest_c ]
   call void @consume_obj(i64* %obj_to_consume)

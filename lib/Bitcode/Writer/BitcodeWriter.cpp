@@ -177,6 +177,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_INLINE_HINT;
   case Attribute::InReg:
     return bitc::ATTR_KIND_IN_REG;
+  case Attribute::JumpTable:
+    return bitc::ATTR_KIND_JUMP_TABLE;
   case Attribute::MinSize:
     return bitc::ATTR_KIND_MIN_SIZE;
   case Attribute::Naked:
@@ -197,6 +199,8 @@ static uint64_t getAttrKindEncoding(Attribute::AttrKind Kind) {
     return bitc::ATTR_KIND_NO_INLINE;
   case Attribute::NonLazyBind:
     return bitc::ATTR_KIND_NON_LAZY_BIND;
+  case Attribute::NonNull:
+    return bitc::ATTR_KIND_NON_NULL;
   case Attribute::NoRedZone:
     return bitc::ATTR_KIND_NO_RED_ZONE;
   case Attribute::NoReturn:
@@ -474,8 +478,8 @@ static void WriteTypeTable(const ValueEnumerator &VE, BitstreamWriter &Stream) {
   Stream.ExitBlock();
 }
 
-static unsigned getEncodedLinkage(const GlobalValue *GV) {
-  switch (GV->getLinkage()) {
+static unsigned getEncodedLinkage(const GlobalValue &GV) {
+  switch (GV.getLinkage()) {
   case GlobalValue::ExternalLinkage:                 return 0;
   case GlobalValue::WeakAnyLinkage:                  return 1;
   case GlobalValue::AppendingLinkage:                return 2;
@@ -487,14 +491,12 @@ static unsigned getEncodedLinkage(const GlobalValue *GV) {
   case GlobalValue::WeakODRLinkage:                  return 10;
   case GlobalValue::LinkOnceODRLinkage:              return 11;
   case GlobalValue::AvailableExternallyLinkage:      return 12;
-  case GlobalValue::LinkerPrivateLinkage:            return 13;
-  case GlobalValue::LinkerPrivateWeakLinkage:        return 14;
   }
   llvm_unreachable("Invalid linkage");
 }
 
-static unsigned getEncodedVisibility(const GlobalValue *GV) {
-  switch (GV->getVisibility()) {
+static unsigned getEncodedVisibility(const GlobalValue &GV) {
+  switch (GV.getVisibility()) {
   case GlobalValue::DefaultVisibility:   return 0;
   case GlobalValue::HiddenVisibility:    return 1;
   case GlobalValue::ProtectedVisibility: return 2;
@@ -502,8 +504,8 @@ static unsigned getEncodedVisibility(const GlobalValue *GV) {
   llvm_unreachable("Invalid visibility");
 }
 
-static unsigned getEncodedDLLStorageClass(const GlobalValue *GV) {
-  switch (GV->getDLLStorageClass()) {
+static unsigned getEncodedDLLStorageClass(const GlobalValue &GV) {
+  switch (GV.getDLLStorageClass()) {
   case GlobalValue::DefaultStorageClass:   return 0;
   case GlobalValue::DLLImportStorageClass: return 1;
   case GlobalValue::DLLExportStorageClass: return 2;
@@ -511,8 +513,8 @@ static unsigned getEncodedDLLStorageClass(const GlobalValue *GV) {
   llvm_unreachable("Invalid DLL storage class");
 }
 
-static unsigned getEncodedThreadLocalMode(const GlobalVariable *GV) {
-  switch (GV->getThreadLocalMode()) {
+static unsigned getEncodedThreadLocalMode(const GlobalValue &GV) {
+  switch (GV.getThreadLocalMode()) {
     case GlobalVariable::NotThreadLocal:         return 0;
     case GlobalVariable::GeneralDynamicTLSModel: return 1;
     case GlobalVariable::LocalDynamicTLSModel:   return 2;
@@ -520,6 +522,35 @@ static unsigned getEncodedThreadLocalMode(const GlobalVariable *GV) {
     case GlobalVariable::LocalExecTLSModel:      return 4;
   }
   llvm_unreachable("Invalid TLS model");
+}
+
+static unsigned getEncodedComdatSelectionKind(const Comdat &C) {
+  switch (C.getSelectionKind()) {
+  case Comdat::Any:
+    return bitc::COMDAT_SELECTION_KIND_ANY;
+  case Comdat::ExactMatch:
+    return bitc::COMDAT_SELECTION_KIND_EXACT_MATCH;
+  case Comdat::Largest:
+    return bitc::COMDAT_SELECTION_KIND_LARGEST;
+  case Comdat::NoDuplicates:
+    return bitc::COMDAT_SELECTION_KIND_NO_DUPLICATES;
+  case Comdat::SameSize:
+    return bitc::COMDAT_SELECTION_KIND_SAME_SIZE;
+  }
+  llvm_unreachable("Invalid selection kind");
+}
+
+static void writeComdats(const ValueEnumerator &VE, BitstreamWriter &Stream) {
+  SmallVector<uint8_t, 64> Vals;
+  for (const Comdat *C : VE.getComdats()) {
+    // COMDAT: [selection_kind, name]
+    Vals.push_back(getEncodedComdatSelectionKind(*C));
+    Vals.push_back(C->getName().size());
+    for (char Chr : C->getName())
+      Vals.push_back((unsigned char)Chr);
+    Stream.EmitRecord(bitc::MODULE_CODE_COMDAT, Vals, /*AbbrevToUse=*/0);
+    Vals.clear();
+  }
 }
 
 // Emit top-level description of module, including target triple, inline asm,
@@ -530,9 +561,9 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
   if (!M->getTargetTriple().empty())
     WriteStringRecord(bitc::MODULE_CODE_TRIPLE, M->getTargetTriple(),
                       0/*TODO*/, Stream);
-  if (!M->getDataLayout().empty())
-    WriteStringRecord(bitc::MODULE_CODE_DATALAYOUT, M->getDataLayout(),
-                      0/*TODO*/, Stream);
+  const std::string &DL = M->getDataLayoutStr();
+  if (!DL.empty())
+    WriteStringRecord(bitc::MODULE_CODE_DATALAYOUT, DL, 0 /*TODO*/, Stream);
   if (!M->getModuleInlineAsm().empty())
     WriteStringRecord(bitc::MODULE_CODE_ASM, M->getModuleInlineAsm(),
                       0/*TODO*/, Stream);
@@ -543,36 +574,35 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
   std::map<std::string, unsigned> GCMap;
   unsigned MaxAlignment = 0;
   unsigned MaxGlobalType = 0;
-  for (Module::const_global_iterator GV = M->global_begin(),E = M->global_end();
-       GV != E; ++GV) {
-    MaxAlignment = std::max(MaxAlignment, GV->getAlignment());
-    MaxGlobalType = std::max(MaxGlobalType, VE.getTypeID(GV->getType()));
-    if (GV->hasSection()) {
+  for (const GlobalValue &GV : M->globals()) {
+    MaxAlignment = std::max(MaxAlignment, GV.getAlignment());
+    MaxGlobalType = std::max(MaxGlobalType, VE.getTypeID(GV.getType()));
+    if (GV.hasSection()) {
       // Give section names unique ID's.
-      unsigned &Entry = SectionMap[GV->getSection()];
+      unsigned &Entry = SectionMap[GV.getSection()];
       if (!Entry) {
-        WriteStringRecord(bitc::MODULE_CODE_SECTIONNAME, GV->getSection(),
+        WriteStringRecord(bitc::MODULE_CODE_SECTIONNAME, GV.getSection(),
                           0/*TODO*/, Stream);
         Entry = SectionMap.size();
       }
     }
   }
-  for (Module::const_iterator F = M->begin(), E = M->end(); F != E; ++F) {
-    MaxAlignment = std::max(MaxAlignment, F->getAlignment());
-    if (F->hasSection()) {
+  for (const Function &F : *M) {
+    MaxAlignment = std::max(MaxAlignment, F.getAlignment());
+    if (F.hasSection()) {
       // Give section names unique ID's.
-      unsigned &Entry = SectionMap[F->getSection()];
+      unsigned &Entry = SectionMap[F.getSection()];
       if (!Entry) {
-        WriteStringRecord(bitc::MODULE_CODE_SECTIONNAME, F->getSection(),
+        WriteStringRecord(bitc::MODULE_CODE_SECTIONNAME, F.getSection(),
                           0/*TODO*/, Stream);
         Entry = SectionMap.size();
       }
     }
-    if (F->hasGC()) {
+    if (F.hasGC()) {
       // Same for GC names.
-      unsigned &Entry = GCMap[F->getGC()];
+      unsigned &Entry = GCMap[F.getGC()];
       if (!Entry) {
-        WriteStringRecord(bitc::MODULE_CODE_GCNAME, F->getGC(),
+        WriteStringRecord(bitc::MODULE_CODE_GCNAME, F.getGC(),
                           0/*TODO*/, Stream);
         Entry = GCMap.size();
       }
@@ -608,29 +638,30 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
 
   // Emit the global variable information.
   SmallVector<unsigned, 64> Vals;
-  for (Module::const_global_iterator GV = M->global_begin(),E = M->global_end();
-       GV != E; ++GV) {
+  for (const GlobalVariable &GV : M->globals()) {
     unsigned AbbrevToUse = 0;
 
     // GLOBALVAR: [type, isconst, initid,
     //             linkage, alignment, section, visibility, threadlocal,
     //             unnamed_addr, externally_initialized, dllstorageclass]
-    Vals.push_back(VE.getTypeID(GV->getType()));
-    Vals.push_back(GV->isConstant());
-    Vals.push_back(GV->isDeclaration() ? 0 :
-                   (VE.getValueID(GV->getInitializer()) + 1));
+    Vals.push_back(VE.getTypeID(GV.getType()));
+    Vals.push_back(GV.isConstant());
+    Vals.push_back(GV.isDeclaration() ? 0 :
+                   (VE.getValueID(GV.getInitializer()) + 1));
     Vals.push_back(getEncodedLinkage(GV));
-    Vals.push_back(Log2_32(GV->getAlignment())+1);
-    Vals.push_back(GV->hasSection() ? SectionMap[GV->getSection()] : 0);
-    if (GV->isThreadLocal() ||
-        GV->getVisibility() != GlobalValue::DefaultVisibility ||
-        GV->hasUnnamedAddr() || GV->isExternallyInitialized() ||
-        GV->getDLLStorageClass() != GlobalValue::DefaultStorageClass) {
+    Vals.push_back(Log2_32(GV.getAlignment())+1);
+    Vals.push_back(GV.hasSection() ? SectionMap[GV.getSection()] : 0);
+    if (GV.isThreadLocal() ||
+        GV.getVisibility() != GlobalValue::DefaultVisibility ||
+        GV.hasUnnamedAddr() || GV.isExternallyInitialized() ||
+        GV.getDLLStorageClass() != GlobalValue::DefaultStorageClass ||
+        GV.hasComdat()) {
       Vals.push_back(getEncodedVisibility(GV));
       Vals.push_back(getEncodedThreadLocalMode(GV));
-      Vals.push_back(GV->hasUnnamedAddr());
-      Vals.push_back(GV->isExternallyInitialized());
+      Vals.push_back(GV.hasUnnamedAddr());
+      Vals.push_back(GV.isExternallyInitialized());
       Vals.push_back(getEncodedDLLStorageClass(GV));
+      Vals.push_back(GV.hasComdat() ? VE.getComdatID(GV.getComdat()) : 0);
     } else {
       AbbrevToUse = SimpleGVarAbbrev;
     }
@@ -640,22 +671,23 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
   }
 
   // Emit the function proto information.
-  for (Module::const_iterator F = M->begin(), E = M->end(); F != E; ++F) {
+  for (const Function &F : *M) {
     // FUNCTION:  [type, callingconv, isproto, linkage, paramattrs, alignment,
     //             section, visibility, gc, unnamed_addr, prefix]
-    Vals.push_back(VE.getTypeID(F->getType()));
-    Vals.push_back(F->getCallingConv());
-    Vals.push_back(F->isDeclaration());
+    Vals.push_back(VE.getTypeID(F.getType()));
+    Vals.push_back(F.getCallingConv());
+    Vals.push_back(F.isDeclaration());
     Vals.push_back(getEncodedLinkage(F));
-    Vals.push_back(VE.getAttributeID(F->getAttributes()));
-    Vals.push_back(Log2_32(F->getAlignment())+1);
-    Vals.push_back(F->hasSection() ? SectionMap[F->getSection()] : 0);
+    Vals.push_back(VE.getAttributeID(F.getAttributes()));
+    Vals.push_back(Log2_32(F.getAlignment())+1);
+    Vals.push_back(F.hasSection() ? SectionMap[F.getSection()] : 0);
     Vals.push_back(getEncodedVisibility(F));
-    Vals.push_back(F->hasGC() ? GCMap[F->getGC()] : 0);
-    Vals.push_back(F->hasUnnamedAddr());
-    Vals.push_back(F->hasPrefixData() ? (VE.getValueID(F->getPrefixData()) + 1)
+    Vals.push_back(F.hasGC() ? GCMap[F.getGC()] : 0);
+    Vals.push_back(F.hasUnnamedAddr());
+    Vals.push_back(F.hasPrefixData() ? (VE.getValueID(F.getPrefixData()) + 1)
                                       : 0);
     Vals.push_back(getEncodedDLLStorageClass(F));
+    Vals.push_back(F.hasComdat() ? VE.getComdatID(F.getComdat()) : 0);
 
     unsigned AbbrevToUse = 0;
     Stream.EmitRecord(bitc::MODULE_CODE_FUNCTION, Vals, AbbrevToUse);
@@ -663,14 +695,15 @@ static void WriteModuleInfo(const Module *M, const ValueEnumerator &VE,
   }
 
   // Emit the alias information.
-  for (Module::const_alias_iterator AI = M->alias_begin(), E = M->alias_end();
-       AI != E; ++AI) {
+  for (const GlobalAlias &A : M->aliases()) {
     // ALIAS: [alias type, aliasee val#, linkage, visibility]
-    Vals.push_back(VE.getTypeID(AI->getType()));
-    Vals.push_back(VE.getValueID(AI->getAliasee()));
-    Vals.push_back(getEncodedLinkage(AI));
-    Vals.push_back(getEncodedVisibility(AI));
-    Vals.push_back(getEncodedDLLStorageClass(AI));
+    Vals.push_back(VE.getTypeID(A.getType()));
+    Vals.push_back(VE.getValueID(A.getAliasee()));
+    Vals.push_back(getEncodedLinkage(A));
+    Vals.push_back(getEncodedVisibility(A));
+    Vals.push_back(getEncodedDLLStorageClass(A));
+    Vals.push_back(getEncodedThreadLocalMode(A));
+    Vals.push_back(A.hasUnnamedAddr());
     unsigned AbbrevToUse = 0;
     Stream.EmitRecord(bitc::MODULE_CODE_ALIAS, Vals, AbbrevToUse);
     Vals.clear();
@@ -919,7 +952,7 @@ static void WriteConstants(unsigned FirstVal, unsigned LastVal,
   SmallVector<uint64_t, 64> Record;
 
   const ValueEnumerator::ValueList &Vals = VE.getValues();
-  Type *LastTy = 0;
+  Type *LastTy = nullptr;
   for (unsigned i = FirstVal; i != LastVal; ++i) {
     const Value *V = Vals[i].first;
     // If we need to switch types, do so now.
@@ -1089,12 +1122,14 @@ static void WriteConstants(unsigned FirstVal, unsigned LastVal,
         Code = bitc::CST_CODE_CE_EXTRACTELT;
         Record.push_back(VE.getTypeID(C->getOperand(0)->getType()));
         Record.push_back(VE.getValueID(C->getOperand(0)));
+        Record.push_back(VE.getTypeID(C->getOperand(1)->getType()));
         Record.push_back(VE.getValueID(C->getOperand(1)));
         break;
       case Instruction::InsertElement:
         Code = bitc::CST_CODE_CE_INSERTELT;
         Record.push_back(VE.getValueID(C->getOperand(0)));
         Record.push_back(VE.getValueID(C->getOperand(1)));
+        Record.push_back(VE.getTypeID(C->getOperand(2)->getType()));
         Record.push_back(VE.getValueID(C->getOperand(2)));
         break;
       case Instruction::ShuffleVector:
@@ -1255,13 +1290,13 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
   case Instruction::ExtractElement:
     Code = bitc::FUNC_CODE_INST_EXTRACTELT;
     PushValueAndType(I.getOperand(0), InstID, Vals, VE);
-    pushValue(I.getOperand(1), InstID, Vals, VE);
+    PushValueAndType(I.getOperand(1), InstID, Vals, VE);
     break;
   case Instruction::InsertElement:
     Code = bitc::FUNC_CODE_INST_INSERTELT;
     PushValueAndType(I.getOperand(0), InstID, Vals, VE);
     pushValue(I.getOperand(1), InstID, Vals, VE);
-    pushValue(I.getOperand(2), InstID, Vals, VE);
+    PushValueAndType(I.getOperand(2), InstID, Vals, VE);
     break;
   case Instruction::ShuffleVector:
     Code = bitc::FUNC_CODE_INST_SHUFFLEVEC;
@@ -1441,9 +1476,12 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
     pushValue(I.getOperand(2), InstID, Vals, VE);         // newval.
     Vals.push_back(cast<AtomicCmpXchgInst>(I).isVolatile());
     Vals.push_back(GetEncodedOrdering(
-                     cast<AtomicCmpXchgInst>(I).getOrdering()));
+                     cast<AtomicCmpXchgInst>(I).getSuccessOrdering()));
     Vals.push_back(GetEncodedSynchScope(
                      cast<AtomicCmpXchgInst>(I).getSynchScope()));
+    Vals.push_back(GetEncodedOrdering(
+                     cast<AtomicCmpXchgInst>(I).getFailureOrdering()));
+    Vals.push_back(cast<AtomicCmpXchgInst>(I).isWeak());
     break;
   case Instruction::AtomicRMW:
     Code = bitc::FUNC_CODE_INST_ATOMICRMW;
@@ -1469,7 +1507,8 @@ static void WriteInstruction(const Instruction &I, unsigned InstID,
     Code = bitc::FUNC_CODE_INST_CALL;
 
     Vals.push_back(VE.getAttributeID(CI.getAttributes()));
-    Vals.push_back((CI.getCallingConv() << 1) | unsigned(CI.isTailCall()));
+    Vals.push_back((CI.getCallingConv() << 1) | unsigned(CI.isTailCall()) |
+                   unsigned(CI.isMustTailCall()) << 14);
     PushValueAndType(CI.getCalledValue(), InstID, Vals, VE);  // Callee
 
     // Emit value #'s for the fixed parameters.
@@ -1807,17 +1846,10 @@ static void WriteUseList(const Value *V, const ValueEnumerator &VE,
     return;
 
   // Make a copy of the in-memory use-list for sorting.
-  unsigned UseListSize = std::distance(V->use_begin(), V->use_end());
-  SmallVector<const User*, 8> UseList;
-  UseList.reserve(UseListSize);
-  for (Value::const_use_iterator I = V->use_begin(), E = V->use_end();
-       I != E; ++I) {
-    const User *U = *I;
-    UseList.push_back(U);
-  }
+  SmallVector<const User*, 8> UserList(V->user_begin(), V->user_end());
 
   // Sort the copy based on the order read by the BitcodeReader.
-  std::sort(UseList.begin(), UseList.end(), bitcodereader_order);
+  std::sort(UserList.begin(), UserList.end(), bitcodereader_order);
 
   // TODO: Generate a diff between the BitcodeWriter in-memory use-list and the
   // sorted list (i.e., the expected BitcodeReader in-memory use-list).
@@ -1914,6 +1946,8 @@ static void WriteModule(const Module *M, BitstreamWriter &Stream) {
 
   // Emit information describing all of the types in the module.
   WriteTypeTable(VE, Stream);
+
+  writeComdats(VE, Stream);
 
   // Emit top-level description of module, including target triple, inline asm,
   // descriptors for global variables, and function prototype info.

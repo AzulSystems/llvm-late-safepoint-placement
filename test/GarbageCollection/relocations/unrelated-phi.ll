@@ -1,4 +1,4 @@
-; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-call-safepoints -spp-all-functions -S  | FileCheck %s
+; RUN: llvm-link %s %p/../Inputs/lsp-library.ll -S | opt -place-safepoints -spp-no-entry -spp-no-backedge -spp-all-functions -S  | FileCheck %s
 
 declare void @call2safepoint()
 

@@ -15,8 +15,10 @@
 
 #include "AMDGPUMCInstLower.h"
 #include "AMDGPUAsmPrinter.h"
+#include "AMDGPUTargetMachine.h"
 #include "InstPrinter/AMDGPUInstPrinter.h"
 #include "R600InstrInfo.h"
+#include "SIInstrInfo.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/IR/Constants.h"
@@ -31,16 +33,30 @@
 
 using namespace llvm;
 
-AMDGPUMCInstLower::AMDGPUMCInstLower(MCContext &ctx):
-  Ctx(ctx)
+AMDGPUMCInstLower::AMDGPUMCInstLower(MCContext &ctx, const AMDGPUSubtarget &st):
+  Ctx(ctx), ST(st)
 { }
 
+enum AMDGPUMCInstLower::SISubtarget
+AMDGPUMCInstLower::AMDGPUSubtargetToSISubtarget(unsigned) const {
+  return AMDGPUMCInstLower::SI;
+}
+
+unsigned AMDGPUMCInstLower::getMCOpcode(unsigned MIOpcode) const {
+
+  int MCOpcode = AMDGPU::getMCOpcode(MIOpcode,
+                              AMDGPUSubtargetToSISubtarget(ST.getGeneration()));
+  if (MCOpcode == -1)
+    MCOpcode = MIOpcode;
+
+  return MCOpcode;
+}
+
 void AMDGPUMCInstLower::lower(const MachineInstr *MI, MCInst &OutMI) const {
-  OutMI.setOpcode(MI->getOpcode());
 
-  for (unsigned i = 0, e = MI->getNumExplicitOperands(); i != e; ++i) {
-    const MachineOperand &MO = MI->getOperand(i);
+  OutMI.setOpcode(getMCOpcode(MI->getOpcode()));
 
+  for (const MachineOperand &MO : MI->explicit_operands()) {
     MCOperand MCOp;
     switch (MO.getType()) {
     default:
@@ -67,8 +83,16 @@ void AMDGPUMCInstLower::lower(const MachineInstr *MI, MCInst &OutMI) const {
 }
 
 void AMDGPUAsmPrinter::EmitInstruction(const MachineInstr *MI) {
-  AMDGPUMCInstLower MCInstLowering(OutContext);
+  AMDGPUMCInstLower MCInstLowering(OutContext,
+                               MF->getTarget().getSubtarget<AMDGPUSubtarget>());
 
+#ifdef _DEBUG
+  StringRef Err;
+  if (!TM.getInstrInfo()->verifyInstruction(MI, Err)) {
+    errs() << "Warning: Illegal instruction detected: " << Err << "\n";
+    MI->dump();
+  }
+#endif
   if (MI->isBundle()) {
     const MachineBasicBlock *MBB = MI->getParent();
     MachineBasicBlock::const_instr_iterator I = MI;

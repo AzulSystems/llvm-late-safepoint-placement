@@ -17,11 +17,10 @@
 #include "llvm/IR/Value.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Statepoint.h"
-#include "llvm/Support/CallSite.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InstIterator.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "llvm/IR/SafepointIRVerifier.h"
@@ -63,7 +62,8 @@ namespace {
 
     // we dont want to add a null into the invalid
     if (isa<Constant>(gcptr)) {
-      assert(isa<ConstantPointerNull>(gcptr) && "We should not record a constant as a gc pointer except for null");
+      assert((isa<ConstantPointerNull>(gcptr) ||
+              isa<UndefValue>(gcptr)) && "We should not record a constant as a gc pointer except for null");
     } else {
       invalid.insert(gcptr);
     }
@@ -81,7 +81,7 @@ namespace {
 
     // Second, walk through all of our uses looking for things which should
     // have been invalidated as well.
-    for (Value::use_iterator I = gcptr->use_begin(), E = gcptr->use_end();
+    for (Value::user_iterator I = gcptr->user_begin(), E = gcptr->user_end();
          I != E; I++) {
       if( isa<CastInst>(*I) || isa<GetElementPtrInst>(*I) ) {
         add_transative_closure(*I, invalid);
@@ -148,7 +148,7 @@ static bool RelocationPHIEscapes(PHINode *node) {
     explored.insert(node);
     if (!node->getMetadata("is_relocation_phi")) return true;
 
-    for (Value::use_iterator I = node->use_begin(), E = node->use_end(); I != E; ++I) {
+    for (Value::user_iterator I = node->user_begin(), E = node->user_end(); I != E; ++I) {
       if (PHINode *node = dyn_cast<PHINode>(*I)) {
         if (explored.count(node) == 0) worklist.push_back(node);
       } else {
@@ -247,25 +247,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
       Instruction* inst = &*itr;
 
       // Check all the uses
-      size_t StartIdx = 0;
-      if( isa<InvokeInst>(inst) || isa<CallInst>(inst) ) {
-        CallSite CS(inst);
-        Function* F = CS.getCalledFunction();
-        if( F && F->getIntrinsicID() == Intrinsic::statepoint ) {
-          // There's a known bug - which we don't want to trip over at the
-          // moment - where uses in VMStates don't get updated properly.  This
-          // only matters for deopt, so WONTFIX (at the moment).
-          const int num_call_args = cast<ConstantInt>(CS.getArgument(1))->getZExtValue();
-          const int num_stacks = cast<ConstantInt>(CS.getArgument(4))->getZExtValue();
-          const int num_locals = cast<ConstantInt>(CS.getArgument(5))->getZExtValue();
-          const int num_mon = cast<ConstantInt>(CS.getArgument(6))->getZExtValue();
-
-          const int gc_begin = 7 + num_call_args + num_stacks + num_locals + num_mon;
-          assert( gc_begin <= std::distance(CS.arg_begin(), CS.arg_end()) );
-          StartIdx = gc_begin;
-        }
-      }
-      for(size_t i = StartIdx; i < inst->getNumOperands(); i++) {
+      for(size_t i = 0; i < inst->getNumOperands(); i++) {
         Value* op = inst-> getOperand(i);
         if( invalid.find(op) != invalid.end() ) {
           errs() << "Illegal use of unrelocated value after safepoint found!\n";
@@ -283,18 +265,13 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
       if( isa<InvokeInst>(inst) || isa<CallInst>(inst) ) {
         CallSite CS(inst);
         Function* F = CS.getCalledFunction();
-        // During safepoint insertion, we use ignore-clobber to mark the
-        // current safepoint before relocations are applied.  This is basically
-        // so we can check newly inserted values such as base pointers which
-        // respect to the recursive assumptions used by relocation.
-        if( F && F->getIntrinsicID() == Intrinsic::statepoint &&
-            !inst->getMetadata("ignore_clobber") ) {
+        if( F && F->getIntrinsicID() == Intrinsic::statepoint ) {
           const int num_call_args = cast<ConstantInt>(CS.getArgument(1))->getZExtValue();
           const int num_stacks = cast<ConstantInt>(CS.getArgument(4))->getZExtValue();
           const int num_locals = cast<ConstantInt>(CS.getArgument(5))->getZExtValue();
           const int num_mon = cast<ConstantInt>(CS.getArgument(6))->getZExtValue();
 
-          const int gc_begin = 7 + num_call_args + num_stacks + num_locals + num_mon;
+          const int gc_begin = 7 + num_call_args + 2 * num_stacks + 2 * num_locals + num_mon;
           assert( gc_begin <= std::distance(CS.arg_begin(), CS.arg_end()) );
 
           for(int i = gc_begin; i < std::distance(CS.arg_begin(), CS.arg_end()); i++) {

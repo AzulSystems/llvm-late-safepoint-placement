@@ -72,6 +72,11 @@ namespace ISD {
     /// the parent's frame or return address, and so on.
     FRAMEADDR, RETURNADDR,
 
+    /// READ_REGISTER, WRITE_REGISTER - This node represents llvm.register on
+    /// the DAG, which implements the named register global variables extension.
+    READ_REGISTER,
+    WRITE_REGISTER,
+
     /// FRAME_TO_ARGS_OFFSET - This node represents offset from frame pointer to
     /// first (possible) on-stack argument. This is needed for correct stack
     /// adjustment during unwind.
@@ -614,6 +619,12 @@ namespace ISD {
     /// This corresponds to the cmpxchg instruction.
     ATOMIC_CMP_SWAP,
 
+    /// Val, Success, OUTCHAIN
+    ///     = ATOMIC_CMP_SWAP_WITH_SUCCESS(INCHAIN, ptr, cmp, swap)
+    /// N.b. this is still a strong cmpxchg operation, so
+    /// Success == "Val == cmp".
+    ATOMIC_CMP_SWAP_WITH_SUCCESS,
+
     /// Val, OUTCHAIN = ATOMIC_SWAP(INCHAIN, ptr, amt)
     /// Val, OUTCHAIN = ATOMIC_LOAD_[OpName](INCHAIN, ptr, amt)
     /// For double-word atomic operations:
@@ -701,6 +712,8 @@ namespace ISD {
     ZEXTLOAD,
     LAST_LOADEXT_TYPE
   };
+
+  NodeType getExtForLoadExtType(LoadExtType);
 
   //===--------------------------------------------------------------------===//
   /// ISD::CondCode enum - These are ordered carefully to make the bitfields

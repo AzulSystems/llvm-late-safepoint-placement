@@ -41,8 +41,8 @@ namespace llvm {
 class Constant : public User {
   void operator=(const Constant &) LLVM_DELETED_FUNCTION;
   Constant(const Constant &) LLVM_DELETED_FUNCTION;
-  virtual void anchor();
-  
+  void anchor() override;
+
 protected:
   Constant(Type *ty, ValueTy vty, Use *Ops, unsigned NumOps)
     : User(ty, vty, Ops, NumOps) {}
@@ -70,6 +70,9 @@ public:
 
   /// isThreadDependent - Return true if the value can vary between threads.
   bool isThreadDependent() const;
+
+  /// Return true if the value is dependent on a dllimport variable.
+  bool isDLLImportDependent() const;
 
   /// isConstantUsed - Return true if the constant has users other than constant
   /// exprs and other dangling things.
@@ -163,6 +166,14 @@ public:
   /// that want to check to see if a global is unused, but don't want to deal
   /// with potentially dead constants hanging off of the globals.
   void removeDeadConstantUsers() const;
+
+  Constant *stripPointerCasts() {
+    return cast<Constant>(Value::stripPointerCasts());
+  }
+
+  const Constant *stripPointerCasts() const {
+    return const_cast<Constant*>(this)->stripPointerCasts();
+  }
 };
 
 } // End llvm namespace

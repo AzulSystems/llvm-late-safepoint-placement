@@ -1,4 +1,4 @@
-; RUN:  opt %s -place-call-safepoints -spp-print-liveset -spp-all-functions -S 2>&1 | FileCheck %s
+; RUN:  opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-print-liveset -spp-all-functions -S 2>&1 | FileCheck %s
 target triple = "x86_64-unknown-linux-gnu"
 
 %jObject = type { [8 x i8] }

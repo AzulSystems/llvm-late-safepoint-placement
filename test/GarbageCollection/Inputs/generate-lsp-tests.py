@@ -17,18 +17,18 @@ def write_test(name, clangO, lsp, optO, llcmode):
     assert optO in range(0,4)
     assert llcmode in ["asm", "obj"]
 
-    lspmap = {"call" : "-place-call-safepoints", 
-              "loop" : "-place-backedge-safepoints", 
-              "both" : "-place-call-safepoints -place-backedge-safepoints"}
+    lspmap = {"call" : "-spp-no-backedge -spp-no-entry", 
+              "loop" : "-spp-no-call -spp-no-entry", 
+              "both" : "-spp-no-entry"}
 
     optOs = "-O%d" % optO
     if optO == 0:
         optOs = ""
     lines = ["; RUN: %%p/../Inputs/clang-proxy.sh %%p/../Inputs/%s.cpp -S -emit-llvm -o %%t -O%d" % (name,clangO),
              "; RUN: llvm-link %t %p/../Inputs/lsp-library.ll -S -o %t",
-             "; RUN: opt %%t -S -o %%t %s %s" % (lspmap[lsp] + " -spp-all-functions", optOs),
-             "; RUN: llc -filetype=%s < %%t" % llcmode,
-             "; RUN: llc < %t | FileCheck %s",
+             "; RUN: opt %%t -S -o %%t %s %s" % (lspmap[lsp] + " -place-safepoints -spp-all-functions", optOs),
+             "; RUN: llc -spp-all-functions -filetype=%s < %%t" % llcmode,
+             "; RUN: llc -spp-all-functions < %t | FileCheck %s",
              "",
              "; CHECK: StackMaps"]
     fullname = "./test/GarbageCollection/lsp-integ/%s-O%d-%s-O%d-%s.ll" % (name, clangO, lsp, optO, llcmode)

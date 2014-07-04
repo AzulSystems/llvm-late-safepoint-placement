@@ -23,6 +23,25 @@ bool isJVMStateAnchorInstruction(const Value *);
 void assertJVMStateSanity(const CallInst *V);
 #endif
 
+// This representes an *opaque* identifier for a JVM type.  LLVM must
+// not rely on being able to interpret what the return value of
+// coerceToInt() means.
+class OpaqueJVMTypeID {
+ public:
+  OpaqueJVMTypeID(const OpaqueJVMTypeID& other)
+      : integerValue(other.integerValue) { }
+
+  int coerceToInt() const { return integerValue; }
+
+ private:
+  int integerValue;
+  explicit OpaqueJVMTypeID(int value) : integerValue(value) { }
+
+  template<typename ValueTy, typename CallInstTy> friend class JVMStateBase;
+  template<typename InstructionTy, typename ValueTy, typename CallSiteTy>
+  friend class StatepointBase;
+};
+
 template<typename ValueTy, typename CallInstTy>
 class JVMStateBase {
  public:
@@ -43,27 +62,40 @@ class JVMStateBase {
         cast<ConstantInt>(jvmState->getArgOperand(3))->getSExtValue());
   }
 
-  int headerSize() const { return 4; }
   int bci() const { return jvmsBCI; }
   int numStackElements() const { return jvmsNumStackElements; }
   int numLocals() const { return jvmsNumLocals; }
   int numMonitors() const { return jvmsNumMonitors; }
 
   ValueTy *stackElementAt(int i) {
-    assert(i < numStackElements() &&
+    assert(i >= 0 && i < numStackElements() &&
            "index out of bounds in stackElementAt");
-    return jvmState->getArgOperand(headerSize() + i);
+    return jvmState->getArgOperand(headerEndOffset() + 2 * i + 1);
+  }
+
+  OpaqueJVMTypeID stackElementTypeAt(int i) {
+    assert(i >= 0 && i < numStackElements() &&
+           "index out of bounds in stackElementAt");
+    int tyInt = cast<ConstantInt>(
+        jvmState->getArgOperand(headerEndOffset() + 2 * i))->getSExtValue();
+    return OpaqueJVMTypeID(tyInt);
   }
 
   ValueTy *localAt(int i) {
-    assert(i < numLocals() && "index out of bounds in localAt");
-    return jvmState->getArgOperand(headerSize() + numStackElements() + i);
+    assert(i >= 0 && i < numLocals() && "index out of bounds in localAt");
+    return jvmState->getArgOperand(stackEndOffset() + 2 * i + 1);
+  }
+
+  OpaqueJVMTypeID localTypeAt(int i) {
+    assert(i >= 0 && i < numLocals() && "index out of bounds in localAt");
+    int tyInt = cast<ConstantInt>(
+        jvmState->getArgOperand(stackEndOffset() + 2 * i))->getSExtValue();
+    return OpaqueJVMTypeID(tyInt);
   }
 
   ValueTy *monitorAt(int i) {
-    assert(i < numMonitors() && "index out of bounds in monitorAt");
-    return jvmState->getArgOperand(
-        headerSize() + numStackElements() + numLocals() + i);
+    assert(i >= 0 && i < numMonitors() && "index out of bounds in monitorAt");
+    return jvmState->getArgOperand(localsEndOffset() + i);
   }
 
  private:
@@ -72,6 +104,16 @@ class JVMStateBase {
   int jvmsNumStackElements;
   int jvmsNumLocals;
   int jvmsNumMonitors;
+
+  int headerEndOffset() const { return 4; }
+
+  int stackEndOffset() const {
+    return headerEndOffset() + 2 * numStackElements();
+  }
+
+  int localsEndOffset() const {
+    return headerEndOffset() + 2 * numStackElements() + 2 * numLocals();
+  }
 };
 
 struct JVMState : public JVMStateBase<Value, CallInst> {

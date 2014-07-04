@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 class InstSI <dag outs, dag ins, string asm, list<dag> pattern> :
-    AMDGPUInst<outs, ins, asm, pattern> {
+    AMDGPUInst<outs, ins, asm, pattern>, PredicateControl {
 
   field bits<1> VM_CNT = 0;
   field bits<1> EXP_CNT = 0;
@@ -49,6 +49,16 @@ class Enc64 <dag outs, dag ins, string asm, list<dag> pattern> :
 
   field bits<64> Inst;
   let Size = 8;
+}
+
+class VOP3Common <dag outs, dag ins, string asm, list<dag> pattern> :
+    Enc64 <outs, ins, asm, pattern> {
+
+  let mayLoad = 0;
+  let mayStore = 0;
+  let hasSideEffects = 0;
+  let UseNamedOperandTable = 1;
+  let VOP3 = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -207,19 +217,22 @@ class VOP2 <bits<6> op, dag outs, dag ins, string asm, list<dag> pattern> :
 }
 
 class VOP3 <bits<9> op, dag outs, dag ins, string asm, list<dag> pattern> :
-    Enc64 <outs, ins, asm, pattern> {
+    VOP3Common <outs, ins, asm, pattern> {
 
   bits<8> dst;
+  bits<2> src0_modifiers;
   bits<9> src0;
+  bits<2> src1_modifiers;
   bits<9> src1;
+  bits<2> src2_modifiers;
   bits<9> src2;
-  bits<3> abs;
   bits<1> clamp;
   bits<2> omod;
-  bits<3> neg;
 
   let Inst{7-0} = dst;
-  let Inst{10-8} = abs;
+  let Inst{8} = src0_modifiers{1};
+  let Inst{9} = src1_modifiers{1};
+  let Inst{10} = src2_modifiers{1};
   let Inst{11} = clamp;
   let Inst{25-17} = op;
   let Inst{31-26} = 0x34; //encoding
@@ -227,25 +240,24 @@ class VOP3 <bits<9> op, dag outs, dag ins, string asm, list<dag> pattern> :
   let Inst{49-41} = src1;
   let Inst{58-50} = src2;
   let Inst{60-59} = omod;
-  let Inst{63-61} = neg;
-  
-  let mayLoad = 0;
-  let mayStore = 0;
-  let hasSideEffects = 0;
-  let UseNamedOperandTable = 1;
-  let VOP3 = 1;
+  let Inst{61} = src0_modifiers{0};
+  let Inst{62} = src1_modifiers{0};
+  let Inst{63} = src2_modifiers{0};
+
 }
 
 class VOP3b <bits<9> op, dag outs, dag ins, string asm, list<dag> pattern> :
-    Enc64 <outs, ins, asm, pattern> {
+    VOP3Common <outs, ins, asm, pattern> {
 
   bits<8> dst;
+  bits<2> src0_modifiers;
   bits<9> src0;
+  bits<2> src1_modifiers;
   bits<9> src1;
+  bits<2> src2_modifiers;
   bits<9> src2;
   bits<7> sdst;
   bits<2> omod;
-  bits<3> neg;
 
   let Inst{7-0} = dst;
   let Inst{14-8} = sdst;
@@ -255,13 +267,10 @@ class VOP3b <bits<9> op, dag outs, dag ins, string asm, list<dag> pattern> :
   let Inst{49-41} = src1;
   let Inst{58-50} = src2;
   let Inst{60-59} = omod;
-  let Inst{63-61} = neg;
+  let Inst{61} = src0_modifiers{0};
+  let Inst{62} = src1_modifiers{0};
+  let Inst{63} = src2_modifiers{0};
 
-  let mayLoad = 0;
-  let mayStore = 0;
-  let hasSideEffects = 0;
-  let UseNamedOperandTable = 1;
-  let VOP3 = 1;
 }
 
 class VOPC <bits<8> op, dag ins, string asm, list<dag> pattern> :
@@ -369,6 +378,7 @@ class MUBUF <bits<7> op, dag outs, dag ins, string asm, list<dag> pattern> :
   let EXP_CNT = 1;
 
   let neverHasSideEffects = 1;
+  let UseNamedOperandTable = 1;
 }
 
 class MTBUF <bits<3> op, dag outs, dag ins, string asm, list<dag> pattern> :

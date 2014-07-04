@@ -13,8 +13,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/JVMState.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Support/CallSite.h"
-#include "llvm/Support/CFG.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
@@ -263,7 +262,7 @@ void RemoveRedundantVMStates::removeVMStateCalls(const DenseSet<CallInst *> &cal
 
     // Remove the use holding this call in place
     assert(CI->hasOneUse() && "must have exactly one use");
-    StoreInst *use = cast<StoreInst>(*CI->use_begin());
+    StoreInst *use = cast<StoreInst>(*CI->user_begin());
     assert(isJVMStateAnchorInstruction(use) && "only possible use");
     use->eraseFromParent();
     assert(use->hasNUses(0) && "should be no uses left");
@@ -281,7 +280,12 @@ void RemoveRedundantVMStates::removeVMStateCalls(const DenseSet<CallInst *> &cal
 
     // This will have to change once we support inlining.  We'll
     // probably then have to RAUW this value.
-    (*I)->eraseFromParent();
+
+    // @llvm.jvmstate might have several calls and one of them is redundant and deleted
+    // does not make sure the function declaration is safe to delete. We need to check
+    // if it still has any use before delete it.
+    if ((*I)->use_empty())
+      (*I)->eraseFromParent();
   }
 }
 

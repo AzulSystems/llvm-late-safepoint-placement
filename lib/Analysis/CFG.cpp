@@ -19,7 +19,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Statepoint.h"
-#include "llvm/Support/CallSite.h"
+#include "llvm/IR/CallSite.h"
 
 using namespace llvm;
 
@@ -105,15 +105,9 @@ bool llvm::isCriticalEdge(const TerminatorInst *TI, unsigned SuccNum,
 
   // If AllowIdenticalEdges is true, then we allow this edge to be considered
   // non-critical iff all preds come from TI's block.
-  while (I != E) {
-    const BasicBlock *P = *I;
-    if (P != FirstPred)
+  for (; I != E; ++I)
+    if (*I != FirstPred)
       return true;
-    // Note: leave this as is until no one ever compiles with either gcc 4.0.1
-    // or Xcode 2. This seems to work around the pred_iterator assert in PR 2207
-    E = pred_end(P);
-    ++I;
-  }
   return false;
 }
 
@@ -133,7 +127,7 @@ static bool loopContainsBoth(const LoopInfo *LI,
                              const BasicBlock *BB1, const BasicBlock *BB2) {
   const Loop *L1 = getOutermostLoop(LI, BB1);
   const Loop *L2 = getOutermostLoop(LI, BB2);
-  return L1 != NULL && L1 == L2;
+  return L1 != nullptr && L1 == L2;
 }
 
 static bool isPotentiallyReachableInner(SmallVectorImpl<BasicBlock *> &Worklist,
@@ -143,7 +137,7 @@ static bool isPotentiallyReachableInner(SmallVectorImpl<BasicBlock *> &Worklist,
   // When the stop block is unreachable, it's dominated from everywhere,
   // regardless of whether there's a path between the two blocks.
   if (DT && !DT->isReachableFromEntry(StopBB))
-    DT = 0;
+    DT = nullptr;
 
   // Limit the number of blocks we visit. The goal is to avoid run-away compile
   // times on large CFGs without hampering sensible code. Arbitrarily chosen.
@@ -166,7 +160,7 @@ static bool isPotentiallyReachableInner(SmallVectorImpl<BasicBlock *> &Worklist,
       return true;
     }
 
-    if (const Loop *Outer = LI ? getOutermostLoop(LI, BB) : 0) {
+    if (const Loop *Outer = LI ? getOutermostLoop(LI, BB) : nullptr) {
       // All blocks in a single loop are reachable from all other blocks. From
       // any of these blocks, we can skip directly to the exits of the loop,
       // ignoring any other blocks inside the loop body.
@@ -210,7 +204,7 @@ bool llvm::isPotentiallyReachable(const Instruction *A, const Instruction *B,
 
     // If the block is in a loop then we can reach any instruction in the block
     // from any other instruction in the block by going around a backedge.
-    if (LI && LI->getLoopFor(BB) != 0)
+    if (LI && LI->getLoopFor(BB) != nullptr)
       return true;
 
     // Linear scan, start at 'A', see whether we hit 'B' or the end first.
@@ -326,7 +320,7 @@ bool llvm::isPotentiallyReachableNotViaDef(Instruction *SP, Instruction *USE, Va
 
   // Port the hack on VMState in Alternative Liveness Analysis
   if( isStatepoint(USE) ) {
-    StatepointOperands statepoint(USE);
+    ImmutableStatepoint statepoint(USE);
     bool isNonDeoptArg = false;
     for(ImmutableCallSite::arg_iterator itr = statepoint.call_args_begin(), end = statepoint.call_args_end();
         itr != end; itr++) {

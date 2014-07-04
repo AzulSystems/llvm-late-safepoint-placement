@@ -1,4 +1,4 @@
-; RUN:  opt %s -place-entry-safepoints -place-backedge-safepoints -place-call-safepoints -S
+; RUN:  opt %s -place-safepoints -S
 
 %jNotAtSP = type { [8 x i8] }
 %jObject = type { [8 x i8] }
@@ -25,19 +25,19 @@ declare  i8* @llvm.stacksave() #5
 declare  void @"Runtime::poll_at_safepoint_static"([1776 x i8]*)
 
 ; Function Attrs: nounwind readonly
-declare i32 @llvm.jvmstate_0(i32, i32, i32, i32, %jObject addrspace(1)*, %jObject addrspace(1)*, i32, i8*, i8*, i8*, i8*, i8*, i8*, i8*) #7
+declare i32 @llvm.jvmstate_0(i32, i32, i32, i32, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*, i32, i8*) #7
 
 declare  void @"Runtime::verify_code_cache_pc"(i64)
 
 declare %jNotAtSP addrspace(1)* @generate_obj3() #8
 
 ; Function Attrs: nounwind readonly
-declare i32 @llvm.jvmstate_52(i32, i32, i32, i32, %jObject addrspace(1)*, %jObject addrspace(1)*, i32, i32, i32, i32, %jObject addrspace(1)*, i32) #7
+declare i32 @llvm.jvmstate_52(i32, i32, i32, i32, i32, %jObject addrspace(1)*, i32, %jObject addrspace(1)*, i32, i32, i32, i32, i32, i32, i32, i32, i32, %jObject addrspace(1)*, i32, i32) #7
 
 ; Function Attrs: nounwind
 define  void @"java.util.HashMap::transfer"([160 x i8]* nocapture readnone %method, %jObject addrspace(1)*, %jObject addrspace(1)*, i32) #9 {
 bci_0:
-  %3 = tail call i32 @llvm.jvmstate_0(i32 0, i32 0, i32 10, i32 0, %jObject addrspace(1)* %0, %jObject addrspace(1)* %1, i32 %2, i8* null, i8* null, i8* null, i8* null, i8* null, i8* null, i8* null)
+  %3 = tail call i32 @llvm.jvmstate_0(i32 0, i32 0, i32 10, i32 0, i32 0, %jObject addrspace(1)* %0, i32 0, %jObject addrspace(1)* %1, i32 0, i32 %2, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null, i32 0, i8* null)
   br label %not_zero
 
 not_zero:                                         ; preds = %bci_0
@@ -67,7 +67,7 @@ not_zero179:                                      ; preds = %not_zero146, %not_z
   %5 = tail call  i32 undef() #5
   %length.i425 = load i32 addrspace(1)* undef, align 4
   %addr636 = bitcast %jObject addrspace(1)* addrspace(1)* %addr98 to %jNotAtSP addrspace(1)* addrspace(1)*
-  %6 = tail call i32 @llvm.jvmstate_52(i32 101, i32 0, i32 10, i32 0, %jObject addrspace(1)* %0, %jObject addrspace(1)* %1, i32 %2, i32 undef, i32 undef, i32 0, %jObject addrspace(1)* %local_7_83, i32 %5)
+  %6 = tail call i32 @llvm.jvmstate_52(i32 101, i32 0, i32 10, i32 0, i32 0, %jObject addrspace(1)* %0, i32 0, %jObject addrspace(1)* %1, i32 0, i32 %2, i32 0, i32 undef, i32 0, i32 undef, i32 0, i32 0, i32 0, %jObject addrspace(1)* %local_7_83, i32 0, i32 %5)
   br label %bci_37-aload
 }
 

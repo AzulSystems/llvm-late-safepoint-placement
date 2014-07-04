@@ -1,16 +1,38 @@
-/** Place safepoints in appropriate locations in the IR.  The two interesting
-    locations are at call sites (which require stack parsability and VM state
-    for deopt) and loop backedges (which require all of that, plus actual poll
-    for the safepoint.)
+/** Place garbage collection safepoints at appropriate locations
+    in the IR.
 
-    Note: This is a proof of concept implementation.  It is slow, and has a few
-    known bugs in corner cases (see the failures/ test dir).  Use at your own risk.
+    There are restrictions on the IR accepted.  We require that:
+    - Pointer values may not be cast to integers and back.
+    - Pointers to GC objects must be tagged with address space #1
+
+    In addition to these fundemental limitations, we currently
+    do not support:
+    - safepoints at invokes
+    - use of indirectbr
+    - aggregate types which contain pointers to GC objects
+    - pointers to GC objects stored in global variables, allocas,
+      or at constant addresses
+    - constant pointers to GC objects (other than null)
+    - use of gc_root
+
+    Patches welcome for the later class of items.
+    
+    This code is organized in two key concepts:
+    - "parse point" - at these locations (all calls in the current
+    implementation), the garbage collector must be able to inspect
+    and modify all pointers to garbage collected objects.  The objects
+    may be arbitrarily relocated and thus the pointers may be modified.
+    - "poll" - this is a location where the compiled code needs to
+    check (or poll) if the running thread needs to collaborate with
+    the garbage collector by taking some action.  In this code, the
+    checking condition and action are abstracted via a frontend
+    provided "safepoint_poll" function.
 
     TODO: Documentation
     Explain why the various algorithms work.  Justify the pieces in at least
     high level detail.    
  */
-#define DEBUG_TYPE "safepoint-erasure"
+#define DEBUG_TYPE "safepoint-placement"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Analysis/LoopPass.h"
@@ -27,18 +49,20 @@
 #include "llvm/IR/JVMState.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Pass.h"
+#include "llvm/PassManager.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/SafepointIRVerifier.h"
 #include "llvm/IR/Statepoint.h"
-#include "llvm/Support/CallSite.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/CFG.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InstIterator.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
 using namespace llvm;
 using namespace std;
@@ -56,10 +80,6 @@ cl::opt<bool> AllFunctions ("spp-all-functions", cl::init(false) );
 // Include deopt state in safepoints?
 cl::opt<bool> UseVMState ("spp-use-vm-state", cl::init(true) );
 
-// Should we enable the known base optimizations?  It can be useful to turn
-// this off to stress relocation logic.
-cl::opt<bool> EnableKnownBaseOpt ("spp-known-base-opt", cl::init(true) );
-
 // Print tracing output
 cl::opt<bool> TraceLSP ("spp-trace", cl::init(false) );
 
@@ -68,13 +88,15 @@ cl::opt<bool> PrintLiveSet ("spp-print-liveset", cl::init(false));
 cl::opt<bool> PrintLiveSetSize ("spp-print-liveset-size", cl::init(false));
 // Print out the base pointers for debugging
 cl::opt<bool> PrintBasePointers("spp-print-base-pointers", cl::init(false));
+// Use alloca to emit relocation phis
+cl::opt<bool> RelocViaAlloc("spp-reloc-via-alloca", cl::init(false));
 
 
 // Bugpoint likes to reduce a crash into _any_ crash (including assertion
 // failures due to configuration problems).  If we're reducing a 'real' crash
 // under bugpoint, make simple configuration errors (which bugpoint introduces)
 // look like normal behavior.
-#define USING_BUGPOINT
+//#define USING_BUGPOINT
 #ifdef USING_BUGPOINT
 #define BUGPOINT_CLEAN_EXIT_IF( cond ) if(true) { \
     if((cond)) { errs() << "FATAL ERROR, exit cleanly for bugpoint\n"; exit(0); } else {}  \
@@ -89,11 +111,11 @@ static bool VMStateRequired() {
 }
 
 
-/* Note: Both PlaceBackedgeSafepoints and PlaceEntrySafepoints need to be
-   instances of ModulePass, not FunctionPass.  FunctionPass is not allowed to
-   do any cross module optimization (such as inlining).  The PassManager will
-   run FunctionPasses in "some order" on all the relevant functions.  In
-   theory, the gc.safepoint_poll function could be being optimized
+/* Note: PlaceBackedgeSafepointsImpl need to be instances of ModulePass, not
+   LoopPass.  LoopPass is not allowed to do any cross module optimization
+   (such as inlining).  The PassManager will run FunctionPasses (of which the
+   Loop Pass Manager is one) in "some order" on all the relevant functions.
+   In theory, the gc.safepoint_poll function could be being optimized
    (i.e. potentially invalid IR) when we attempt to inline it.  While in
    practice, passes aren't run in parallel, we did see an issue where we'd
    insert a safepoint into the poll function and *then* inline it.  Yeah,
@@ -105,94 +127,79 @@ static bool VMStateRequired() {
    isn't technically enough (LCSSA can modify loop edges in certian
    poll_safepoints, who knew?), but it mostly appears to work for the moment.
 
+   Also, the whole LoopPass system is an utter mess.  Duplicating the loop
+   based analysis here outside of a loop pass is non-trivial, but should be
+   done ASAP.
+
    THIS REALLY NEEDS FIXED.
  */
 
 namespace {
 
-  // TODO: This should not be a loop pass.  Merge with upstream LLVM changes
-  // for LCCSA and LoopSimplify, then make it a module pass
-struct PlaceBackedgeSafepoints : public LoopPass {
+
+/** An analysis pass whose purpose is to identify each of the backedges in
+    the function which require a safepoint poll to be inserted. */
+struct PlaceBackedgeSafepointsImpl : public LoopPass {
   static char ID;
-  PlaceBackedgeSafepoints()
+
+  /// The output of the pass - gives a list of each backedge (described by
+  /// pointing at the branch) which need a poll inserted.
+  std::vector<TerminatorInst*> PollLocations;
+  
+  PlaceBackedgeSafepointsImpl()
     : LoopPass(ID) {
-    initializePlaceBackedgeSafepointsPass(*PassRegistry::getPassRegistry());
+    initializePlaceBackedgeSafepointsImplPass(*PassRegistry::getPassRegistry());
   }
 
   virtual bool runOnLoop(Loop *, LPPassManager &LPM);
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    // Be careful before you start removing these - I got some odd crashes when
-    // I removed analysis I wasn't obviously using
-    AU.addRequired<DominatorTreeWrapperPass>();
-    AU.addRequired<LoopInfo>();
+    // needed for determining if the loop is finite
     AU.addRequired<ScalarEvolution>();
+    // to ensure each edge has a single backedge
+    // TODO: is this still required?
     AU.addRequiredID(LoopSimplifyID);
-    // LCSSA is a special form which ensures that values defined in the loop
-    // which survive the loop have a phi node in the exit block.  
-    AU.addRequiredID(LCSSAID);
 
-    AU.addPreserved<DominatorTreeWrapperPass>();
-    //AU.setPreservesCFG(); // We insert new blocks!
-    //Q: Do we preserve any others?  I need to think about this a bit.
-    //insertPHIs in particular may break LoopSimplify and/or LCSSA
+    // We no longer modify the IR at all in this pass.  Thus all
+    // analysis are preserved.
+    AU.setPreservesAll();
   }
 
 };
 
-struct PlaceCallSafepoints : public FunctionPass {
-  static char ID; // Pass identification, replacement for typeid
-  PlaceCallSafepoints() : FunctionPass(ID) {
-    initializePlaceCallSafepointsPass(*PassRegistry::getPassRegistry());
-  }
-  virtual bool runOnFunction(Function &F) {
+cl::opt<bool> NoEntry ("spp-no-entry", cl::init(false));
+cl::opt<bool> NoCall ("spp-no-call", cl::init(false));
+cl::opt<bool> NoBackedge ("spp-no-backedge", cl::init(false));
 
-    bool shouldRun = AllFunctions ||
-      F.getFnAttribute("gc-add-call-safepoints").getValueAsString().equals("true");
-    if( shouldRun && F.getName().equals("gc.safepoint_poll") ) {
-      assert(AllFunctions && "misconfiguration");
-      //go read the module pass comment above
-      shouldRun = false;
-      errs() << "WARNING: Ignoring (illegal) request to place safepoints in gc.safepoint_poll\n";
-    }
-    if( !shouldRun ) {
-      return false;
-    }
-    
+struct PlaceSafepoints : public ModulePass {
+  static char ID; // Pass identification, replacement for typeid
+
+  bool EnableEntrySafepoints;
+  bool EnableBackedgeSafepoints;
+  bool EnableCallSafepoints;
+  
+  PlaceSafepoints() : ModulePass(ID) {
+    initializePlaceSafepointsPass(*PassRegistry::getPassRegistry());
+    EnableEntrySafepoints = !NoEntry;
+    EnableBackedgeSafepoints = !NoBackedge;
+    EnableCallSafepoints = !NoCall;
+  }
+  virtual bool runOnModule(Module &M) {
     bool modified = false;
-    for(Function::iterator itr = F.begin(), end = F.end();
-        itr != end; itr++) {
-      BasicBlock& BB = *itr;
-      modified |= runOnBasicBlock(BB);
+    for( Module::iterator itr = M.begin(), end = M.end();
+         itr != end; itr++) {
+      Function& F = *itr;
+      modified |= runOnFunction(F);
     }
     return modified;
   }
-  virtual bool runOnBasicBlock(BasicBlock &BB);
+  bool runOnFunction(Function& F);
 
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    AU.addRequired<DominatorTreeWrapperPass>();
-
-    AU.addPreserved<DominatorTreeWrapperPass>();
-    AU.setPreservesCFG();
+    // We modify the graph wholesale (inlining, block insertion, etc).  We
+    // preserve nothing at the moment.  We could potentially preserve dom tree
+    // if that was worth doing
   }
-
-};
-  // Needs to be a module pass - it can do inlining!
-struct PlaceEntrySafepoints : public FunctionPass {
-  static char ID; // Pass identification, replacement for typeid
-  PlaceEntrySafepoints() : FunctionPass(ID) {
-    initializePlaceEntrySafepointsPass(*PassRegistry::getPassRegistry());
-  }
-  virtual bool runOnFunction(Function &F);
-
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
-    AU.addRequired<DominatorTreeWrapperPass>();
-
-    AU.addPreserved<DominatorTreeWrapperPass>();
-    // We insert blocks!
-    // AU.setPreservesCFG();
-  }
-
 };
 
 struct RemoveFakeVMStateCalls : public FunctionPass {
@@ -218,11 +225,11 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
       CallInst* CI = instToRemove[i];
 
       // Remove the use holding this call in place
-      assert( std::distance(CI->use_begin(), CI->use_end()) == 1 && "must have exactly one use");
-      StoreInst* use = cast<StoreInst>(*CI->use_begin());
+      assert( std::distance(CI->user_begin(), CI->user_end()) == 1 && "must have exactly one use");
+      StoreInst* use = cast<StoreInst>(*CI->user_begin());
       assert(isJVMStateAnchorInstruction(use));
       use->eraseFromParent();
-      assert( std::distance(CI->use_begin(), CI->use_end()) == 0 && "should be no uses left");
+      assert( std::distance(CI->user_begin(), CI->user_end()) == 0 && "should be no uses left");
 
       // Remove the call itself
       CI->eraseFromParent();
@@ -249,6 +256,20 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
 };
 }
 
+namespace {
+  /** The type of the internal cache used inside the findBasePointers family
+      of functions.  From the callers perspective, this is an opaque type and
+      should not be inspected.
+
+      In the actual implementation this caches two relations:
+      - The base relation itself (i.e. this pointer is based on that one)
+      - The base defining value relation (i.e. before base_phi insertion)
+      Generally, after the execution of a full findBasePointer call, only the
+      base relation will remain.  Internally, we add a mixture of the two
+      types, then update all the second type to the first type
+  */
+  typedef std::map<Value*, Value*> DefiningValueMapTy;
+}
 
 // The following declarations call out the key steps of safepoint placement and
 // summarize their preconditions, postconditions, and side effects.  This is
@@ -256,12 +277,60 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
 // actual implementations below.
 namespace SafepointPlacementImpl {
 
-  // Insert a safepoint (parse point) at the given call instruction.
-  void InsertSafepoint(DominatorTree& DT, const CallSite& CS, CallInst* vmstate);
+  struct PartiallyConstructedSafepointRecord {
+    /// The set of values known to be live accross this safepoint
+    std::set<llvm::Value*> liveset;
+
+    /// Mapping from live pointers to a base-defining-value
+    std::map<llvm::Value*, llvm::Value*> base_pairs;
+
+    /// Any new values which were added to the IR during base pointer analysis
+    /// for this safepoint
+    std::set<llvm::Value*> newInsertedDefs;
+
+    /// The bounds of the inserted code for the safepoint
+    std::pair<Instruction*, Instruction*> safepoint;
+
+    /// The result of the safepointing call (or NULL)
+    Value* result;
+    
+    void verify() {
+    }
+  };
+
+  /// Find the initial live set. Note that due to base pointer 
+  /// insertion, the live set may be incomplete.
+  void analyzeParsePointLiveness(DominatorTree& DT,
+                                 const CallSite& CS,
+                                 PartiallyConstructedSafepointRecord& result);
+
+
+  /// Find the required based pointers (and adjust the live set) for the given
+  /// parse point.  
+  void findBasePointers(DominatorTree& DT, DefiningValueMapTy& DVCache,
+                        const CallSite& CS,
+                        PartiallyConstructedSafepointRecord& result);
+
+  /// Check for liveness of items in the insert defs and add them to the live
+  /// and base pointer sets
+  void fixupLiveness(DominatorTree& DT, const CallSite& CS,
+                     const std::set<Value*>& allInsertedDefs,
+                     PartiallyConstructedSafepointRecord& result);
+
+
+
+  /// Insert a safepoint (parse point) at the given call instruction.  Does not
+  /// do relocation and does not remove the existing call.  That's handled by
+  /// the caller.
+  void InsertSafepoint(DominatorTree& DT, const CallSite& CS, CallInst* vmstate,
+                       PartiallyConstructedSafepointRecord& result);
+
+  
   // Insert a safepoint poll immediately before the given instruction.  Does
-  // not provide a parse point for the 'after' instruction itself.  Updates the
-  // DT and Loop to reflect changes.  Loop can be null.
-  void InsertSafepointPoll(DominatorTree& DT, LoopInfo* LI, Loop* L, Instruction* after, CallInst* vmstate);
+  // not handle the parsability of state at the runtime call, that's the
+  // callers job.
+  void InsertSafepointPoll(DominatorTree& DT, Instruction* after,
+                           std::vector<CallSite>& ParsePointsNeeded /*rval*/);
 
   bool isGCLeafFunction(const CallSite& CS);
 
@@ -317,7 +386,9 @@ namespace SafepointPlacementImpl {
   */
   void findBasePointers(const std::set<llvm::Value*>& live,
                         std::map<llvm::Value*, llvm::Value*>& base_pairs,
-                        DominatorTree *DT, std::set<llvm::Value*>& newInsertedDefs);
+                        DominatorTree *DT,
+                        DefiningValueMapTy& DVCache,
+                        std::set<llvm::Value*>& newInsertedDefs);
 
   CallInst* findVMState(llvm::Instruction* term, DominatorTree *DT);
 
@@ -342,19 +413,22 @@ namespace SafepointPlacementImpl {
       post: valid IR which does not respect the newly inserted safepoint.
       length(live) == length(newDefs) and all new/old values are aligned.
   */
-  std::pair<Instruction*, Instruction*>
-  CreateSafepoint(const CallSite& CS, /* to replace */
-                  llvm::CallInst* vm_state,
-                  const std::vector<llvm::Value*>& basePtrs,
-                  const std::vector<llvm::Value*>& liveVariables,
-                  std::vector<llvm::Instruction*>& newDefs);
+  void CreateSafepoint(const CallSite& CS, /* to replace */
+                       llvm::CallInst* vm_state,
+                       const std::vector<llvm::Value*>& basePtrs,
+                       const std::vector<llvm::Value*>& liveVariables,
+                       struct PartiallyConstructedSafepointRecord& result);
   
   /// This routine walks the CFG and inserts PHI nodes as needed to handle a
   /// new definition which is replacing an old definition at a location where
   /// there didn't use to be a use.  The Value being replaced need not be an
   /// instruction (it can be an alloc, or argument for instance), but the
   /// replacement definition must be an Instruction.
-  void insertPHIsForNewDef(DominatorTree& DT, Value* oldDef, Instruction* newDef, std::pair<Instruction*, Instruction*> safepoint);
+  void insertPHIsForNewDef(DominatorTree& DT, Function& F, Value* oldDef);
+
+
+  // do all the relocation update via allocas and mem2reg
+  void relocationViaAlloca(Function& F, DominatorTree& DT, const std::vector<Value*>& live, const std::vector<struct PartiallyConstructedSafepointRecord>& records);
 }
 
 using namespace SafepointPlacementImpl;
@@ -453,12 +527,13 @@ namespace {
 
 }
 
-bool PlaceBackedgeSafepoints::runOnLoop(Loop* L, LPPassManager &LPM) {
-  LoopInfo *LI = &getAnalysis<LoopInfo>();
-  ScalarEvolution *SE = &getAnalysis<ScalarEvolution>();
-  DominatorTreeWrapperPass& DTWP = getAnalysis<DominatorTreeWrapperPass>();
-  DominatorTree& DT = DTWP.getDomTree();
+/// Given a set of patch points which need to be parsable, turn them in to
+/// statepoints.  WARNING: Destroys the CallSites, they no longer exist!
+static bool insertParsePoints(Function& F, DominatorTree& DT,
+                              std::vector<CallSite>& toUpdate);  
 
+bool PlaceBackedgeSafepointsImpl::runOnLoop(Loop* L, LPPassManager &LPM) {
+  ScalarEvolution *SE = &getAnalysis<ScalarEvolution>();
 
   // Loop through all predecessors of the loop header and identify all
   // backedges.  We need to place a safepoint on every backedge (potentially).
@@ -478,13 +553,6 @@ bool PlaceBackedgeSafepoints::runOnLoop(Loop* L, LPPassManager &LPM) {
   }
   if( !shouldRun ) {
     return false;
-  }
-
-
-  if( VerifyAllIR ) {
-    // precondition check
-    verifyFunction(*header->getParent());
-    verifySafepointIR(*header->getParent());
   }
 
   bool modified = false;
@@ -521,69 +589,13 @@ bool PlaceBackedgeSafepoints::runOnLoop(Loop* L, LPPassManager &LPM) {
       errs() << "[LSP] terminator instruction: "; term->dump();
     }
 
-    // locate the defining VM state object for this location
-    CallInst* vm_state = NULL;
-    if( VMStateRequired() ) {
-      vm_state = findVMState(term, &DT);
-      BUGPOINT_CLEAN_EXIT_IF( !vm_state );
-      assert( vm_state && "must find vm state or be scanning c++ source code");
-    }
-
-    InsertSafepointPoll(DT, LI, L, term, vm_state);
+    PollLocations.push_back(term);
   }
 
   return modified;
 }
 
-bool PlaceCallSafepoints::runOnBasicBlock(BasicBlock &BB) {
-  // Note: We do this in two passes to avoid reasoning about invalidate
-  // iterators since we replace the call instruction and erase the old ones
-  std::vector<CallSite> toUpdate;
-  for(BasicBlock::iterator institr = BB.begin(), end = BB.end();
-      institr != end; institr++) {
-    Instruction& inst = *institr;
-
-    if( isa<CallInst>(&inst) || isa<InvokeInst>(&inst) ) {
-      CallSite CS(&inst);
-
-      // No safepoint needed or wanted
-      if( !needsStatepoint(CS) ) {
-        continue;
-      }
-      
-      toUpdate.push_back(CS);
-    }
-  }
-  DominatorTreeWrapperPass& DTWP = getAnalysis<DominatorTreeWrapperPass>();
-  DominatorTree& DT = DTWP.getDomTree();
-  for(size_t i = 0; i < toUpdate.size(); i++) {
-    CallSite& CS = toUpdate[i];
-
-    // locate the defining VM state object for this location
-    CallInst* vm_state = NULL;
-    if( VMStateRequired() ) {
-      vm_state = findVMState(CS.getInstruction(), &DT);
-      BUGPOINT_CLEAN_EXIT_IF( !vm_state );
-      assert( vm_state && "must find vm state or be scanning c++ source code");
-    }
-
-    // Note: This deletes the instruction refered to by the CallSite!
-    InsertSafepoint(DT, CS, vm_state);
-
-    if( VerifyAllIR ) {
-      // between every safepoint, and post condition
-      verifyFunction(*BB.getParent());
-      verifySafepointIR(*BB.getParent());
-    }
-  }
-
-  return !toUpdate.empty();
-}
-
-bool PlaceEntrySafepoints::runOnFunction(Function &F) {
-  DominatorTreeWrapperPass& DTWP = getAnalysis<DominatorTreeWrapperPass>();
-  DominatorTree& DT = DTWP.getDomTree();
-  
+static Instruction* findLocationForEntrySafepoint(Function &F, DominatorTree& DT) {
   bool shouldRun = AllFunctions ||
     F.getFnAttribute("gc-add-entry-safepoints").getValueAsString().equals("true");
   if( shouldRun && F.getName().equals("gc.safepoint_poll") ) {
@@ -593,7 +605,7 @@ bool PlaceEntrySafepoints::runOnFunction(Function &F) {
     errs() << "WARNING: Ignoring (illegal) request to place safepoints in gc.safepoint_poll\n";
   }
   if( !shouldRun ) {
-    return false;
+    return NULL;
   }
 
   // Conceptually, this poll needs to be on method entry, but in practice, we
@@ -607,7 +619,7 @@ bool PlaceEntrySafepoints::runOnFunction(Function &F) {
 
   if (F.begin() == F.end()) {
     // Empty function, nothing was done.
-    return false;
+    return NULL;
   }
 
   // Due to the way the frontend generates IR, we may have a couple of intial
@@ -642,60 +654,401 @@ bool PlaceEntrySafepoints::runOnFunction(Function &F) {
     currentBB = nextBB;
   }
   TerminatorInst* term = currentBB->getTerminator();
+  return term;
+}
+
+  /// Identify the list of call sites which need to be have parseable state
+static void findCallSafepoints(Function &F,
+                               std::vector<CallSite>& Found /*rval*/);
+
+static void findCallSafepoints(Function &F,
+                               std::vector<CallSite>& Found /*rval*/) {
+  assert( Found.empty() && "must be empty!");
+  bool shouldRun = AllFunctions ||
+    F.getFnAttribute("gc-add-call-safepoints").getValueAsString().equals("true");
+  if( shouldRun && F.getName().equals("gc.safepoint_poll") ) {
+    assert(AllFunctions && "misconfiguration");
+    //go read the module pass comment above
+    shouldRun = false;
+    errs() << "WARNING: Ignoring (illegal) request to place safepoints in gc.safepoint_poll\n";
+  }
+  if( !shouldRun ) {
+    return;
+  }
   
-  CallInst *vm_state = NULL;
-  if( VMStateRequired() ) {
-    vm_state = findVMState(term, &DT);
-    BUGPOINT_CLEAN_EXIT_IF( !vm_state );
-    assert( vm_state && "must find vm state or be scanning c++ source code");
+  for( inst_iterator itr = inst_begin(F), end = inst_end(F);
+       itr != end; itr++) {
+    Instruction* inst = &*itr;
+    
+    if( isa<CallInst>(inst) || isa<InvokeInst>(inst) ) {
+      CallSite CS(inst);
+      
+      // No safepoint needed or wanted
+      if( !needsStatepoint(CS) ) {
+        continue;
+      }
+      
+      Found.push_back(CS);
+    }
+  }
+}
+
+/// Implement a unique function which doesn't require we sort the input
+/// vector.  Doing so has the effect of changing the output of a couple of
+/// tests in ways which make them less useful in testing fused safepoints.
+/// TODO: remove this once fused safepoints is working and fix the tests
+template<typename T>
+static void unique_unsorted(std::vector<T>& vec) {
+  std::set<T> seen;
+  std::vector<T> tmp;
+  vec.reserve(vec.size());
+  std::swap(tmp, vec);
+  for( typename std::vector<T>::iterator itr = tmp.begin(), end = tmp.end();
+       itr != end; itr++) {
+    if( seen.insert(*itr).second ) {
+      vec.push_back(*itr);
+    }
+  }
+}
+
+static Function* getUseHolder(Function& F) {
+  FunctionType* ftype = FunctionType::get(Type::getVoidTy(F.getParent()->getContext()), true);
+  Function* Func = cast<Function>(F.getParent()->getOrInsertFunction("__tmp_use", ftype));
+  return Func;
+}
+
+
+static bool insertParsePoints(Function& F, DominatorTree& DT,
+                              std::vector<CallSite>& toUpdate) {
+  // Unique the vectors since we can end up with duplicates if we scan the call
+  // site for call safepoints after we add it for entry or backedge.  The
+  // only reason we need tracking at all is that some functions might have
+  // polls but not call safepoints and thus we might miss marking the runtime
+  // calls for the polls. (This is useful in test cases!)
+  unique_unsorted(toUpdate);
+
+  // sanity check the input
+  for(size_t i = 0; i < toUpdate.size(); i++) {
+    CallSite& CS = toUpdate[i];
+    assert( CS.getInstruction()->getParent()->getParent() == &F );
   }
 
-  InsertSafepointPoll(DT, NULL, NULL /*no loop*/, term, vm_state);
-  return true; // we modified the CFG because we inserted a safepoint
+  // A list of dummy calls added to the IR to keep various values obviously
+  // live in the IR.  We'll remove all of these when done.
+  std::vector<CallInst*> holders;
+  
+  // Insert a dummy call with all of the arguments to the vm_state we'll need
+  // for the actual safepoint insertion.  This ensures those arguments are held
+  // live over safepoints between the current jvmstate and the eventual use
+  // we'll insert below.
+  if( VMStateRequired() ) {
+    holders.reserve(holders.size() + toUpdate.size());
+    for(size_t i = 0; i < toUpdate.size(); i++) {
+      CallSite& CS = toUpdate[i];
+      assert( CS.isCall() && "implement invoke here");
+
+      // This must tbe the same jvmstate we find later
+      CallInst* vm_state = findVMState(CS.getInstruction(), &DT);
+      BUGPOINT_CLEAN_EXIT_IF( !vm_state );
+      assert( vm_state && "must find vm state or be scanning c++ source code");
+
+      // Create a clone then change the name for readability
+      CallInst* holder = cast<CallInst>(vm_state->clone());
+      holder->setCalledFunction( getUseHolder(F) );
+
+      // Insert the holder right after the parsepoint
+      BasicBlock::iterator next(CS.getInstruction());
+      next++;
+      CS.getInstruction()->getParent()->getInstList().insert(next, holder);
+      holders.push_back(holder);
+    }
+  }
+
+
+  
+  std::vector<struct PartiallyConstructedSafepointRecord> records;
+  records.reserve(toUpdate.size());
+  // A) Identify all gc pointers which are staticly live at the given call
+  // site.  
+  for(size_t i = 0; i < toUpdate.size(); i++) {
+    CallSite& CS = toUpdate[i];
+    
+    struct PartiallyConstructedSafepointRecord info;
+    analyzeParsePointLiveness(DT, CS, info);
+    records.push_back(info);
+  }
+  assert( records.size() == toUpdate.size());
+
+  // B) Find the base pointers for each live pointer
+  /* scope for caching */ {
+    // Cache the 'defining value' relation used in the computation and
+    // insertion of base phis and selects.  This ensures that we don't insert
+    // large numbers of duplicate base_phis.  
+    DefiningValueMapTy DVCache;
+    
+    for(size_t i = 0; i < records.size(); i++) {
+      struct PartiallyConstructedSafepointRecord& info = records[i];
+      CallSite& CS = toUpdate[i];
+      findBasePointers(DT, DVCache, CS, info);
+    }
+  } // end of cache scope
+  assert( records.size() == toUpdate.size());
+  
+  // The base phi insertion logic (for any safepoint) may have inserted new
+  // instructions which are now live at some safepoint.  The simplest such
+  // example is:
+  // loop:
+  //   phi a  <-- will be a new base_phi here
+  //   safepoint 1 <-- that needs to be live here
+  //   gep a + 1
+  //   safepoint 2
+  //   br loop
+  std::set<llvm::Value*> allInsertedDefs;
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    allInsertedDefs.insert( info.newInsertedDefs.begin(),
+                            info.newInsertedDefs.end() );
+  }
+  // We insert some dummy calls after each safepoint to definitely hold live
+  // the base pointers which were identified for that safepoint.  We'll then
+  // ask liveness for _every_ base inserted to see what is now live.  Then we
+  // remove the dummy calls.
+  holders.reserve(holders.size() + records.size());
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    CallSite& CS = toUpdate[i];
+    Function* Func = getUseHolder(F);
+
+    std::vector<Value*> bases;
+    for (std::map<Value*,Value*>::const_iterator I = info.base_pairs.begin(), E = info.base_pairs.end();
+         I != E;
+         ++I) {
+      bases.push_back(I->second);
+    }
+
+    assert( CS.isCall() && "implement invoke here");
+
+    BasicBlock::iterator next(CS.getInstruction());
+    next++;    
+    CallInst* base_holder = CallInst::Create(Func, bases, "", next);
+    holders.push_back(base_holder);
+  }
+  
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    CallSite& CS = toUpdate[i];
+
+    fixupLiveness(DT, CS, allInsertedDefs, info);
+  }
+  for(size_t i = 0; i < holders.size(); i++) {
+    holders[i]->eraseFromParent();
+    holders[i] = NULL;
+  }
+  holders.clear();
+
+  // Now run through and insert the safepoints, but do _NOT_ update or remove
+  // any existing uses.  We have references to live variables that need to
+  // survive to the last iteration of this loop.
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    CallSite& CS = toUpdate[i];
+    // locate the defining VM state object for this location
+    CallInst* vm_state = NULL;
+    if( VMStateRequired() ) {
+      vm_state = findVMState(CS.getInstruction(), &DT);
+      BUGPOINT_CLEAN_EXIT_IF( !vm_state );
+      assert( vm_state && "must find vm state or be scanning c++ source code");
+      // Note: There is an implicit assumption here that values in the VM state
+      // are live at the statepoint if-and-only-if they are live at the VM
+      // state.  We duplicate jvm_states before each possible statepoint right
+      // before this pass runs, so this should hold.
+      // As a result of this assumption, we don't need to adjust liveness for
+      // values at statepoints based on what jvm_states other statepoints might
+      // need.  This is an important simpllication.
+    }
+    // Note: This deletes the instruction refered to by the CallSite!
+    InsertSafepoint(DT, CS, vm_state, info);
+    info.verify();
+  }
+
+  // Adjust all users of the old call sites to use the new ones instead
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    CallSite& CS = toUpdate[i];
+    BasicBlock* BB = CS.getInstruction()->getParent();
+    // If there's a result (which might be live at another safepoint), update it
+    if( info.result ) {
+      // Replace all uses with the new call
+      CS.getInstruction()->replaceAllUsesWith(info.result);
+    }
+
+    // Now that we've handled all uses, remove the original call itself
+    // Note: The insert point can't be the deleted instruction!
+    CS.getInstruction()->eraseFromParent();
+    /* scope */ {
+      // trip an assert if somehow this isn't a terminator
+      TerminatorInst* TI = BB->getTerminator();
+      (void)TI;
+      assert( (CS.isCall() || TI == info.safepoint.first) && "newly insert invoke is not terminator?");
+    }
+  }
+  
+  toUpdate.clear(); // prevent accident use of invalid CallSites
+
+  if( VerifyAllIR ) {
+    // Did we generate valid IR?  Safepoint invariants don't yet hold
+    verifyFunction(F);
+  }
+
+  // Do all the fixups of the original live variables to their relocated selves
+  std::vector<Value*> live;
+  for(size_t i = 0; i < records.size(); i++) {
+    struct PartiallyConstructedSafepointRecord& info = records[i];
+    // We can't simply save the live set from the original insertion.  One of
+    // the live values might be the result of a call which needs a safepoint.
+    // That Value* no longer exists and we need to use the new gc_result.
+    // Thankfully, the liveset is embedded in the statepoint (and updated), so
+    // we just grab that.
+    Statepoint statepoint(info.safepoint.first);
+    live.insert(live.end(), statepoint.gc_args_begin(), statepoint.gc_args_end());
+  }
+  unique_unsorted(live);
+
+  if (RelocViaAlloc) {
+    relocationViaAlloca(F, DT, live, records);
+  } else {
+    for(unsigned i = 0; i < live.size(); i++) {
+      insertPHIsForNewDef(DT, F, live[i]);
+    }
+  }
+
+  // Verify the result
+  if( VerifyAllIR ) {
+    // post condition (safepoint invariants hold)
+    verifyFunction(F);
+    verifySafepointIR(F);
+  }
+  return !records.empty();
 }
 
 
-char PlaceBackedgeSafepoints::ID = 0;
-char PlaceCallSafepoints::ID = 0;
-char PlaceEntrySafepoints::ID = 0;
+
+// TODO:
+// - separate the analysis into it's own step
+// - convert the for-safepoint loop into a per-phase, per safepoint loop
+bool PlaceSafepoints::runOnFunction(Function &F) {
+
+  if( F.isDeclaration() ||
+      F.begin() == F.end() ) {
+    // This is a declaration, nothing to do.  Must exit early to avoid crash in
+    // dom tree calculation
+    return false;
+  }
+
+  if( VerifyAllIR ) {
+    // precondition check, valid IR, safepoint invariants not yet established
+    verifyFunction(F);
+  }
+
+  // TODO: We can be less aggressive about inserting polls here if we know the
+  // loop contains a call which contains a poll.
+
+  // STEP 1 - Insert the safepoint polling locations.  We do not need to
+  // actually insert parse points yet.  That will be done for all polls and
+  // calls in a single pass.
+
+  bool modified = false;
+
+  // Note: With the migration, we need to recompute this for each 'pass'.  Once
+  // we merge these, we'll do it once before the analysis
+  DominatorTree DT;
+  
+  std::vector<CallSite> ParsePointNeeded;
+
+  if( EnableBackedgeSafepoints ) {
+    // Construct a pass manager to run the LoopPass backedge logic.  We
+    // need the pass manager to handle scheduling all the loop passes
+    // appropriately.  Doing this by hand is painful and just not worth messing
+    // with for the moment.
+    FunctionPassManager FPM(F.getParent());
+    PlaceBackedgeSafepointsImpl* PBS = new PlaceBackedgeSafepointsImpl();
+    FPM.add(PBS);
+    // Note: While the analysis pass itself won't modify the IR, LoopSimplify
+    // (which it depends on) may.  i.e. analysis must be recalculated after run
+    FPM.run(F);
+
+    // We preserve dominance information when inserting the poll, otherwise
+    // we'd have to recalculate this on every insert
+    DT.recalculate(F);
+
+    // Insert a poll at each point the analysis pass identified
+    for(size_t i = 0; i < PBS->PollLocations.size(); i++) {
+      // We are inserting a poll, the function is modified
+      modified = true;
+      
+      TerminatorInst* term = PBS->PollLocations[i];
+
+      // VM State handling is handled when making the runtime call sites parsable
+      std::vector<CallSite> ParsePoints;
+      InsertSafepointPoll(DT, term, ParsePoints);
+
+      // Record the parse points for later use
+      ParsePointNeeded.insert(ParsePointNeeded.end(),
+                              ParsePoints.begin(), ParsePoints.end());
+    }
+  }
+
+  if( EnableEntrySafepoints ) {
+    DT.recalculate(F);
+    Instruction* term = findLocationForEntrySafepoint(F, DT);
+    if( !term ) {
+      // policy choice not to insert?
+    } else {
+      std::vector<CallSite> RuntimeCalls;
+      InsertSafepointPoll(DT, term, RuntimeCalls);
+      modified = true;
+      ParsePointNeeded.insert(ParsePointNeeded.end(),
+                              RuntimeCalls.begin(), RuntimeCalls.end());
+    }
+  }
+  
+  if( EnableCallSafepoints ) {
+    DT.recalculate(F);
+    std::vector<CallSite> Calls;
+    findCallSafepoints(F, Calls);
+    ParsePointNeeded.insert(ParsePointNeeded.end(), Calls.begin(), Calls.end());
+  }
+  // Any parse point (no matter what source) will be handled here
+  DT.recalculate(F); // Needed?
+  modified |= insertParsePoints(F, DT, ParsePointNeeded);
+
+  return modified;
+}
+
+
+char PlaceBackedgeSafepointsImpl::ID = 0;
+char PlaceSafepoints::ID = 0;
 char RemoveFakeVMStateCalls::ID = 0;
 
-Pass *llvm::createPlaceBackedgeSafepointsPass() {
-  return new PlaceBackedgeSafepoints();
-}
-FunctionPass *llvm::createPlaceCallSafepointsPass() {
-  return new PlaceCallSafepoints();
-}
-FunctionPass *llvm::createPlaceEntrySafepointsPass() {
-  return new PlaceEntrySafepoints();
+ModulePass *llvm::createPlaceSafepointsPass() {
+  return new PlaceSafepoints();
 }
 
 FunctionPass *llvm::createRemoveFakeVMStateCallsPass() {
   return new RemoveFakeVMStateCalls();
 }
 
-INITIALIZE_PASS_BEGIN(PlaceBackedgeSafepoints,
-                "place-backedge-safepoints", "Place Backedge Safepoints", false, false)
-INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopInfo)
+INITIALIZE_PASS_BEGIN(PlaceBackedgeSafepointsImpl,
+                "place-backedge-safepoints-impl", "Place Backedge Safepoints", false, false)
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolution)
 INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
-INITIALIZE_PASS_DEPENDENCY(LCSSA)
-INITIALIZE_PASS_END(PlaceBackedgeSafepoints,
-                "place-backedge-safepoints", "Place Backedge Safepoints", false, false)
+INITIALIZE_PASS_END(PlaceBackedgeSafepointsImpl,
+                "place-backedge-safepoints-impl", "Place Backedge Safepoints", false, false)
 
-INITIALIZE_PASS_BEGIN(PlaceCallSafepoints,
-                "place-call-safepoints", "Place Call Safepoints", false, false)
-INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_END(PlaceCallSafepoints,
-                    "place-call-safepoints", "Place Call Safepoints", false, false)
-
-
-INITIALIZE_PASS_BEGIN(PlaceEntrySafepoints,
-                "place-entry-safepoints", "Place Method Enty Safepoints", false, false)
-INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_END(PlaceEntrySafepoints,
-                    "place-entry-safepoints", "Place Method Entry Safepoints", false, false)
+INITIALIZE_PASS_BEGIN(PlaceSafepoints,
+                "place-safepoints", "Place Safepoints", false, false)
+INITIALIZE_PASS_END(PlaceSafepoints,
+                    "place-safepoints", "Place Safepoints", false, false)
 
 INITIALIZE_PASS_BEGIN(RemoveFakeVMStateCalls,
                 "remove-fake-vmstate-calls", "Remove VM state calls", false, false)
@@ -735,10 +1088,8 @@ bool SafepointPlacementImpl::isGCLeafFunction(const CallSite& CS) {
 }
 
 
-void SafepointPlacementImpl::InsertSafepointPoll(DominatorTree& DT, LoopInfo* LI, Loop* L, Instruction* term, CallInst* vm_state) {
-  assert( !vm_state || term->getParent()->getParent() == vm_state->getParent()->getParent() &&
-          "must belong to the same function");
-  
+void SafepointPlacementImpl::InsertSafepointPoll(DominatorTree& DT, Instruction* term,
+                                                 std::vector<CallSite>& ParsePointsNeeded /*rval*/) {  
   Module* M = term->getParent()->getParent()->getParent();
   assert(M);  
 
@@ -796,173 +1147,34 @@ void SafepointPlacementImpl::InsertSafepointPoll(DominatorTree& DT, LoopInfo* LI
   // Recompute since we've invalidated cached data.  Conceptually we
   // shouldn't need to do this, but implementation wise we appear to.  Needed
   // so we can insert safepoints correctly.
+  // TODO: update more cheaply
   DT.recalculate(*after->getParent()->getParent());
-
-  // Not all callers are within loops.
-  if( L && LI ) {
-    // Update the loop information so that we don't trip over verifyLoop
-    // in the LPM
-    for(std::set<BasicBlock*>::iterator itr = BBs.begin();
-        itr != BBs.end(); itr++) {
-      // The second condition is to avoid blocks which are essentially side
-      // exits.  Normal return or exceptional flow would each have an in loop
-      // sucessor, but a block which simply terminates execution would not.
-      if( !L->contains(*itr) && !isa<UnreachableInst>((*itr)->getTerminator())) {
-        L->addBasicBlockToLoop(*itr, LI->getBase());
-      } 
-    }
-  }
     
   if( VerifyAllIR ) { verifyFunction(*term->getParent()->getParent()); }
 
   BUGPOINT_CLEAN_EXIT_IF(calls.empty());
   assert( !calls.empty() && "slow path not found for safepoint poll");
-  
-  // Add a call safepoint for each newly inserted call, this is required so
-  // that the runtime knows how to parse the last frame when we actually take
-  // the safepoint (i.e. execute the slow path)
+
+  // Record the fact we need a parsable state at the runtime call contained in
+  // the poll function.  This is required so that the runtime knows how to
+  // parse the last frame when we actually take  the safepoint (i.e. execute
+  // the slow path)
+  assert( ParsePointsNeeded.empty() );
   for(size_t i = 0; i< calls.size(); i++) {
 
     // No safepoint needed or wanted
     if( !needsStatepoint(calls[i]) ) {
       continue;
     }
-    
+
     // These are likely runtime calls.  Should we assert that via calling
     // convention or something?
-    InsertSafepoint(DT, CallSite(calls[i]), vm_state);
-
-    if( VerifyAllIR ) {
-      // between each
-      verifyFunction(*term->getParent()->getParent());
-      verifySafepointIR(*term->getParent()->getParent());
-    }
+    ParsePointsNeeded.push_back( CallSite(calls[i]) );
   }
-  if( VerifyAllIR ) {
-    // post condition
-    verifyFunction(*term->getParent()->getParent());
-    verifySafepointIR(*term->getParent()->getParent());
-  }
+  assert( ParsePointsNeeded.size() <= calls.size() );
 }
 
-
-namespace {
-
-  bool isRelocationPhiOfX(PHINode* phi, Value* X) {
-    if( !phi->getMetadata("is_relocation_phi") ) {
-      return false;
-    }
-    const unsigned NumPHIValues = phi->getNumIncomingValues();
-    assert( NumPHIValues > 0 && "zero input phis are illegal");
-    for (unsigned i = 0; i != NumPHIValues; ++i) {
-      Value *InVal = phi->getIncomingValue(i);
-      if( InVal == X ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // Walk backwards until we find the currently relocation of base.  When we
-  // haven't inserted safepoints yet, this will simply be base.  Otherwise, it
-  // will be the nearest relocation phi.  This is neccessary since the
-  // optimistic base computation can find a base value which is common along
-  // all paths in a previous existing relocation phi.  Picture:
-  //   SP <-- our base points here
-  //  / \
-  //  \ /
-  // rel phi <-- we skip this rel phi
-  //  / \
-  //  \ /
-  //  SP <-- this is the new safepoint
-  // Note: This function is known to be buggy.  See test case in failures/
-  Value* findCurrentRelocationForBase(Instruction* term, Value* base) {
-    // If base is a Constant, it will not equal to any instruction in the later check
-    // and it should simply return itself.
-    if (isa<Constant>(base)) {
-      Constant* temp = cast<Constant>(base);
-      assert( !isa<GlobalVariable>(base) && !isa<UndefValue>(base) && "order of checks wrong!");
-      assert( temp->getType()->isPointerTy() && "Base for pointer must be another pointer" );
-      assert( temp->isNullValue() && "null is the only case which makes sense");
-      return base;
-    }
-    
-    // Walk back to the first join node - scanning each block as we encounter it
-    BasicBlock* BB = term->getParent();
-    while(true) {
-      BasicBlock::reverse_iterator itr = BB->rbegin();
-      if( BB == term->getParent() ) {
-        itr = BasicBlock::reverse_iterator(term);
-      }
-      for( BasicBlock::reverse_iterator end = BB->rend();
-           itr != end; itr++) {
-        Instruction* inst = &*itr;
-        if( inst == base ) {
-          // found the def, it is current
-          return base;
-        }
-
-        assert( !isStatepoint(inst) && "base pointer was not live at last safepoint" );
-      }
-      if( 1 != std::distance(pred_begin(BB), pred_end(BB)) ) {
-        // We've found the first join block or the entry block
-        break;
-      }
-      BB = BB->getSinglePredecessor();
-    }
-
-    if( BB != &BB->getParent()->getEntryBlock() &&
-        std::distance(pred_begin(BB), pred_end(BB)) <= 0 ) {
-      BUGPOINT_CLEAN_EXIT_IF(true);
-      assert( false &&
-              "don't support unreachable basic blocks for insertion");
-    }
-
-    // We've already scanned the block itself, so now we look for terminating
-    // conditions.  For the entry block, this means arguments, for every other
-    // block (which must be join) this means relocation phis
-
-    if( BB == &BB->getParent()->getEntryBlock() ) {
-      if( isa<Argument>(base) ) {
-        // definition still valid
-        return base;
-      }
-      
-      llvm_unreachable("we should have found the def!");
-    }
-    
-    bool relocationPhiFound = false;
-    for(BasicBlock::iterator itr = BB->begin(), end = BB->getFirstNonPHI();
-        itr != end; itr++) {
-      PHINode* phi = cast<PHINode>(&*itr);
-      if( phi->getMetadata("is_relocation_phi") ) {
-        relocationPhiFound = true;
-        if( isRelocationPhiOfX(phi, base) ) {
-          // We found a relocaiton phi, this must be the currently live version
-          // of the original base pointer.
-          return phi;
-        }
-      }
-    }
-    if( relocationPhiFound ) {
-      // If relocation phi is found but base is not in any of the relocation phi
-      // the only valid case is that the base is a new def after last safepoint.
-      // If not, it should be caught by the safepointIRVerifier later.
-      // Therefore we choose not to duplicate the verification here, despite this
-      // we can easily check for a few clear errors here to help isolate problems quickly
-      assert(!isa<Argument>(base) && "If an argument is not live at last safepoint, it should not reach here across the safepoint");
-      assert((!isa<PHINode>(base) || !cast<PHINode>(base)->getMetadata("is_relocation_phi")) &&
-          "If it is a relocation phi, it should be found at the very first joint node");
-      return base;
-    } else {
-      // This node is not reachable from any current statepoint.  We know this
-      // since any such statepoint would be responsible for inserting a
-      // relocation phi here and we didn't find one.  Since base clearly can
-      // reach here, we know there can be no relocations between it and us.
-      return base;
-    }
-  }
-  
+namespace {  
   struct name_ordering {
     Value* base;
     Value* derived;
@@ -1001,13 +1213,13 @@ namespace {
     }
   }
 }
-void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& CS, CallInst* vm_state) {
+
+
+
+void SafepointPlacementImpl::analyzeParsePointLiveness(DominatorTree& DT, const CallSite& CS,
+                                                       SafepointPlacementImpl::PartiallyConstructedSafepointRecord& result) {
   Instruction* inst = CS.getInstruction();
 
-  // A) Identify all gc pointers which are staticly live at the given call
-  // site.  Note that the definition of liveness used here interacts in
-  // interesting ways with the relocation logic (due to induction assumptions
-  // around inserting multiple safepoints.)
   BasicBlock* BB = inst->getParent();
   std::set<llvm::Value*> liveset;
   findLiveGCValuesAtInst(inst, BB, DT, NULL, liveset);
@@ -1029,11 +1241,14 @@ void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& 
     errs() << "Safepoint For: " << CS.getCalledValue()->getName() << "\n";
     errs() << "Number live values: " << liveset.size() << "\n";
   }
+  result.liveset = liveset;
+}
 
-  // B) Find the base pointers for each live pointer
+void SafepointPlacementImpl::findBasePointers(DominatorTree& DT, DefiningValueMapTy& DVCache, const CallSite& CS,
+                                               SafepointPlacementImpl::PartiallyConstructedSafepointRecord& result) {
   std::map<llvm::Value*, llvm::Value*> base_pairs;
   std::set<llvm::Value*> newInsertedDefs;
-  findBasePointers(liveset, base_pairs, &DT, newInsertedDefs);
+  findBasePointers(result.liveset, base_pairs, &DT, DVCache, newInsertedDefs);
   
   if (PrintBasePointers) {
     errs() << "Base Pairs (w/o Relocation):\n";
@@ -1044,47 +1259,57 @@ void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& 
     }
   }
 
-  // Update our base pointers so that they're valid with respect to the
-  // relocations inserted by any previous safepoint.  Remember, we're *adding*
-  // new uses here.  We need to make sure they're respect w.r.t. prexisting
-  // relocations.  The logic here depends on both our base pointer
-  // implementation and relocation logic.  (i.e. this is arguably somewhat of a hack.)
-  for (std::map<Value *, Value *>::const_iterator I = base_pairs.begin(), E = base_pairs.end();
-       I != E; ++I) {
-    Value* derived = I->first;
-    Value* base = I->second;
-    Value* relocated = findCurrentRelocationForBase(inst, base);
-    if (newInsertedDefs.find(base) != newInsertedDefs.end())
-      assert(base == relocated && "All new defs are just inserted at this safepoint and should not have no relocation");
-    if( base != relocated ) {
-      base_pairs[derived] = relocated;
+  result.base_pairs = base_pairs;
+  result.newInsertedDefs = newInsertedDefs;
+}
 
-      // Note: We can't directly check that relocated was in the live set.  It
-      // could have been avaiable, but unused.  (i.e. we could be making it
-      // live.)  It could also be newly insert base_phi which is available, but
-      // was not previously part of the live set
+void SafepointPlacementImpl::fixupLiveness(DominatorTree& DT, const CallSite& CS,
+                                           const std::set<Value*>& allInsertedDefs,
+                                           PartiallyConstructedSafepointRecord& result) {
+  Instruction* inst = CS.getInstruction();
+  
+  std::set<llvm::Value*> liveset = result.liveset;
+  std::map<llvm::Value*, llvm::Value*> base_pairs = result.base_pairs;
+
+  // Add bases which are used by live pointers at this safepoint.  This enables
+  // a useful optimization in the loop below to avoid testing liveness, but is
+  // not otherwise actually needed.  This will result in a few extra live
+  // values at this safepoint (potentially).
+  addBasesAsLiveValues(liveset, base_pairs);
+
+  // For each new definition, check to see if a) the definition dominates the
+  // instruction we're interested in, and b) one of the uses of that definition
+  // is edge-reachable from the instruction we're interested in.  This is the
+  // same definition of liveness we used in the intial liveness analysis
+  for( Value* newDef : allInsertedDefs ) {
+    if( liveset.count(newDef) ) {
+      // already live, no action needed
+      continue;
     }
-  }
+    // PERF: Use DT to check instruction domination might not be good for
+    // compilation time, and we could change to optimal solution if this
+    // turn to be a issue
+    if( !DT.dominates(cast<Instruction>(newDef), inst) ) {
+      // can't possibly be live at inst
+      continue;
+    }
 
-  for (std::set<llvm::Value*>::iterator defIterator = newInsertedDefs.begin(), defEnd = newInsertedDefs.end();
-      defIterator != defEnd; defIterator++) {
-    Value* newDef = *defIterator;
-    for (Value::use_iterator useIterator = newDef->use_begin(), useEnd = newDef->use_end();
-        useIterator != useEnd; useIterator++) {
-      Instruction* use = cast<Instruction>(*useIterator);
-
-      // Record new defs those are dominating and live at the safepoint (we need to make sure def dominates safepoint since our liveness analysis has this assumption)
-      // Use DT to check instruction domination might not be good for compilation time, and we could change to optimal solution if this turn to be a issue
-      if (DT.dominates(cast<Instruction>(newDef), inst) && isLiveAtSafepoint(inst, use, *newDef, DT, NULL)) {
-        Value* relocated = findCurrentRelocationForBase(inst, newDef);
-        assert(newDef == relocated && "All new defs are just inserted at this safepoint and should not have no relocation");
+    // PERF: This loop could be easily optimized even without moving to a true
+    // liveness analysis.  Simply grouping uses by basic block would help a lot.
+    for( User* user : newDef->users() ) {
+      Instruction* use = cast<Instruction>(user);
+      // Record new defs those are dominating and live at the safepoint (we
+      // need to make sure def dominates safepoint since our liveness analysis
+      // has this assumption)
+      if( isLiveAtSafepoint(inst, use, *newDef, DT, NULL)) {
         // Add the live new defs into liveset and base_pairs
         liveset.insert(newDef);
         base_pairs[newDef] = newDef;
+        break; // Break out of the use loop
       }
     }
   }
-
+  
   if (PrintBasePointers) {
     errs() << "Base Pairs: (w/Relocation)\n";
     for (std::map<Value *, Value *>::const_iterator I = base_pairs.begin(), E = base_pairs.end();
@@ -1094,10 +1319,16 @@ void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& 
     }
   }
 
-  // Needed even with relocation of base pointers
-  addBasesAsLiveValues(liveset, base_pairs);
+  result.liveset = liveset;
+  result.base_pairs = base_pairs;
+}
+void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& CS, CallInst* vm_state,
+                                             SafepointPlacementImpl::PartiallyConstructedSafepointRecord& result) {
+  Instruction* inst = CS.getInstruction();
+  BasicBlock* BB = inst->getParent();
   
-  if( VerifyAllIR ) { verifyFunction(*BB->getParent()); }
+  std::set<llvm::Value*> liveset = result.liveset;
+  std::map<llvm::Value*, llvm::Value*> base_pairs = result.base_pairs;
 
   // Third, do the actual placement.
   if( !BaseRewriteOnly ) {
@@ -1119,34 +1350,17 @@ void SafepointPlacementImpl::InsertSafepoint(DominatorTree& DT, const CallSite& 
     // The order is otherwise meaningless.
     stablize_order(basevec, livevec);
     
-    std::vector<Instruction*> newDefs;
-    std::pair<Instruction*, Instruction*> safepoint =
-      CreateSafepoint(CS, vm_state, basevec, livevec, newDefs);
-    
+    CreateSafepoint(CS, vm_state, basevec, livevec, result);
+
     if( VerifyAllIR ) {
       verifyFunction(*BB->getParent());
       // At this point, we've insert the new safepoint node and all of it's
       // base pointers, but we *haven't* yet performed relocation updates.
-      // Minus this one statepoint, the statepoint invariants should hold for
-      // all values *including* the newly created base pointers
-      Instruction* statepoint = safepoint.first;
-      assert( isStatepoint(statepoint) );      
-      Value* const_1= ConstantInt::get(Type::getInt32Ty(BB->getParent()->getParent()->getContext()), 1);         
-      MDNode* md = MDNode::get(BB->getParent()->getParent()->getContext(), const_1);
-      statepoint->setMetadata("ignore_clobber", md);    
-      verifySafepointIR(*BB->getParent());
-      statepoint->setMetadata("ignore_clobber", NULL); //a.k.a. removeMetadata    
+      // None of the safepoint invariants yet hold.
+    }
 
-    }
+    result.verify();
     
-    // Update all uses to reflect the new definitions.  This will involve
-    // rewriting fairly large chunks of the graph to insert PHIs and fixup uses.
-    assert( newDefs.size() == livevec.size() );
-    for(unsigned i = 0; i < newDefs.size(); i++) {
-      insertPHIsForNewDef(DT, livevec[i], newDefs[i], safepoint);
-    }
-    
-    if( VerifyAllIR ) { verifyFunction(*BB->getParent()); }
     // Note: The fact that we've inserted to the underlying instruction list
     // does not invalidate any iterators since llvm uses a doubly linked list
     // implementation internally.
@@ -1191,7 +1405,7 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(Instruction* term, BasicBloc
       continue;
     }
      
-    for (Value::use_iterator I = arg.use_begin(), E = arg.use_end();
+    for (Value::user_iterator I = arg.user_begin(), E = arg.user_end();
          I != E; I++) {
       Instruction* use = cast<Instruction>(*I);
       if( isLiveAtSafepoint(term, use, arg, DT, LI) ) {
@@ -1245,7 +1459,7 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(Instruction* term, BasicBloc
           continue;
         }
         
-        for (Value::use_iterator I = inst.use_begin(), E = inst.use_end();
+        for (Value::user_iterator I = inst.user_begin(), E = inst.user_end();
              I != E; I++) {
           Instruction* use = cast<Instruction>(*I);
           if (isLiveAtSafepoint(term, use, inst, DT, LI)) {
@@ -1390,7 +1604,7 @@ namespace {
         // we're interested in.  
         CallInst* statepoint = cast<CallInst>(II->getArgOperand(0));
         ConstantInt* base_offset = cast<ConstantInt>(II->getArgOperand(1));
-        for (Value::use_iterator I = statepoint->use_begin(), E = statepoint->use_end();
+        for (Value::user_iterator I = statepoint->user_begin(), E = statepoint->user_end();
              I != E; I++) {
           IntrinsicInst* use = dyn_cast<IntrinsicInst>(*I);
           // can be a gc_result use as well, we should ignore that
@@ -1475,7 +1689,7 @@ namespace {
     return NULL;
   }
 
-  typedef std::map<Value*, Value*> DefiningValueMapTy;
+  /// Returns the base defining value for this value.
   Value* findBaseDefiningValueCached(Value* I, DefiningValueMapTy& cache) {
     if (cache.find(I) == cache.end()) {
       cache[I] = findBaseDefiningValue(I);
@@ -1488,6 +1702,51 @@ namespace {
     return cache[I];
   }
 
+  /// Return a base pointer for this value if known.  Otherwise, return it's
+  /// base defining value.  
+  Value* findBaseOrBDV(Value* I, DefiningValueMapTy& cache) {
+    Value* def = findBaseDefiningValueCached(I, cache);
+    if( cache.count(def) ) {
+      // Either a base-of relation, or a self reference.  Caller must check.
+      return cache[def];
+    }
+    // Only a BDV available
+    return def;
+  }
+
+  Value* findRelocateValueAtSP(Instruction* statepoint, Value* def) {
+    for (Value::user_iterator I = statepoint->user_begin(), E = statepoint->user_end();
+         I != E; I++) {
+      IntrinsicInst* use = dyn_cast<IntrinsicInst>(*I);
+      // can be a gc_result use as well, we should ignore that
+      if( use && use->getIntrinsicID() == Intrinsic::gc_relocate ) {
+        GCRelocateOperands relocate(use);
+        if( def == relocate.derivedPtr() ) {
+          return use;
+        }
+      }
+    }
+    return NULL;
+  }
+
+
+  /// Given the result of a call to findBaseDefiningValue, or findBaseOrBDV,
+  /// is it known to be a base pointer?  Or do we need to continue searching.
+  bool isKnownBaseResult(Value* v) {
+    if( !isa<PHINode>(v) && !isa<SelectInst>(v) ) {
+      // no recursion possible
+      return true;
+    }
+    if( cast<Instruction>(v)->getMetadata("is_base_value") ) {
+      // This is a previously inserted base phi or select.  We know
+      // that this is a base value.
+      return true;
+    }
+
+    // We need to keep searching
+    return false;
+  }
+  
 
   //TODO: find a better name for this
   class PhiState {
@@ -1545,7 +1804,7 @@ namespace {
     // case its status is looked up in the phiStates map; or a regular
     // SSA value, in which case it is assumed to be a base.
     void meetWith(Value *V) {
-      PhiState otherState = getStateForBase(V);
+      PhiState otherState = getStateForBDV(V);
       assert((MeetPhiStates::pureMeet(otherState, currentResult) ==
               MeetPhiStates::pureMeet(currentResult, otherState)) &&
              "math is wrong: meet does not commute!");
@@ -1558,13 +1817,13 @@ namespace {
     const std::map<Value *, PhiState> &phiStates;
     PhiState currentResult;
 
-    PhiState getStateForBase(Value *baseValue) {
-      if (SelectInst *SI = dyn_cast<SelectInst>(baseValue)) {
-        return lookupFromMap(SI);
-      } else if (PHINode *PN = dyn_cast<PHINode>(baseValue)) {
-        return lookupFromMap(PN);
-      } else {
+    /// Return a phi state for a base defining value.  We'll generate a new
+    /// base state for known bases and expect to find a cached state otherwise
+    PhiState getStateForBDV(Value *baseValue) {
+      if( isKnownBaseResult(baseValue) ) {
         return PhiState(baseValue);
+      } else {
+        return lookupFromMap(baseValue);
       }
     }
 
@@ -1608,22 +1867,11 @@ namespace {
   /// which is the base pointer.  (This is reliable and can be used for
   /// relocation.)  On failure, returns NULL.
   Value* findBasePointer(Value* I, DefiningValueMapTy& cache, std::set<llvm::Value*>& newInsertedDefs) {
-    Value* def =  findBaseDefiningValueCached(I, cache);
+    Value* def =  findBaseOrBDV(I, cache);
 
-    if (!isa<PHINode>(def) && !isa<SelectInst>(def)) {
+    if( isKnownBaseResult(def) ) {
       return def;
     }
-
-    // If we encounter something which we know is a base value from a previous
-    // iteration of safepoint insertion, we can just use that.
-    if( EnableKnownBaseOpt && cast<Instruction>(def)->getMetadata("is_base_value") ) {
-      return def;
-    }
-    // As an extension of the above check, in theory, you could leverage
-    // any previous existing subgraph of base values.  This is an optimization
-    // and should NOT be done until fully stable.
-
-
 
     /* Here's the rough algorithm:
        - For every SSA value, construct a mapping to either an actual base
@@ -1651,6 +1899,7 @@ namespace {
     map<Value*, PhiState> states;
     states[def] = PhiState();
     // Recursively fill in all phis & selects reachable from the initial one
+    // for which we don't already know a definite base value for
     // PERF: Yes, this is as horribly inefficient as it looks.
     bool done = false;
     while (!done) {
@@ -1659,28 +1908,29 @@ namespace {
           itr != end;
           itr++) {
         Value* v = itr->first;
+        assert( !isKnownBaseResult(v) && "why did it get added?");
         if (PHINode* phi = dyn_cast<PHINode>(v)) {
           unsigned NumPHIValues = phi->getNumIncomingValues();
           assert( NumPHIValues > 0 && "zero input phis are illegal");
           for (unsigned i = 0; i != NumPHIValues; ++i) {
             Value *InVal = phi->getIncomingValue(i);
-            Value *local = findBaseDefiningValueCached(InVal, cache);
-            if (states.find(local) == states.end() &&
-                (isa<PHINode>(local) || isa<SelectInst>(local))) {
+            Value *local = findBaseOrBDV(InVal, cache);
+            if (!isKnownBaseResult(local) &&
+                states.find(local) == states.end()) {
               states[local] = PhiState();
               done = false;
             }
           }
         } else if (SelectInst* sel = dyn_cast<SelectInst>(v)) {
-          Value* local = findBaseDefiningValueCached(sel->getTrueValue(), cache);
-          if (states.find(local) == states.end() &&
-              (isa<PHINode>(local) || isa<SelectInst>(local))) {
+          Value* local = findBaseOrBDV(sel->getTrueValue(), cache);
+          if (!isKnownBaseResult(local) &&
+              states.find(local) == states.end()) {
             states[local] = PhiState();
             done = false;
           }
-          local = findBaseDefiningValueCached(sel->getFalseValue(), cache);
-          if (states.find(local) == states.end() &&
-              (isa<PHINode>(local) || isa<SelectInst>(local))) {
+          local = findBaseOrBDV(sel->getFalseValue(), cache);
+          if (!isKnownBaseResult(local) &&
+              states.find(local) == states.end()) {
             states[local] = PhiState();
             done = false;
           }
@@ -1715,14 +1965,14 @@ namespace {
            itr++) {
         MeetPhiStates calculateMeet(states);
         Value *v = itr->first;
-
+        assert( !isKnownBaseResult(v) && "why did it get added?");
         assert(isa<SelectInst>(v) || isa<PHINode>(v));
         if (SelectInst *select = dyn_cast<SelectInst>(v)) {
-          calculateMeet.meetWith(findBaseDefiningValueCached(select->getTrueValue(), cache));
-          calculateMeet.meetWith(findBaseDefiningValueCached(select->getFalseValue(), cache));
+          calculateMeet.meetWith(findBaseOrBDV(select->getTrueValue(), cache));
+          calculateMeet.meetWith(findBaseOrBDV(select->getFalseValue(), cache));
         } else if (PHINode *phi = dyn_cast<PHINode>(v)) {
           for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
-            calculateMeet.meetWith(findBaseDefiningValueCached(phi->getIncomingValue(i), cache));
+            calculateMeet.meetWith(findBaseOrBDV(phi->getIncomingValue(i), cache));
           }
         } else {
           llvm_unreachable("no such state expected");
@@ -1758,7 +2008,7 @@ namespace {
          itr++) {
       Instruction* v = cast<Instruction>(itr->first);
       PhiState state = itr->second;
-
+      assert( !isKnownBaseResult(v) && "why did it get added?");
       assert(!state.isUnknown() && "Optimistic algorithm didn't complete!");
       if (state.isConflict()) {
         if (isa<PHINode>(v)) {
@@ -1794,6 +2044,7 @@ namespace {
       Instruction* v = cast<Instruction>(itr->first);
       PhiState state = itr->second;
 
+      assert( !isKnownBaseResult(v) && "why did it get added?");
       assert(!state.isUnknown() && "Optimistic algorithm didn't complete!");
       if (state.isConflict()) {
         if (PHINode* basephi = dyn_cast<PHINode>(state.getBase())) {
@@ -1804,9 +2055,10 @@ namespace {
             BasicBlock* InBB = phi->getIncomingBlock(i);
             // Find either the defining value for the PHI or the normal base for
             // a non-phi node
-            Value* base = findBaseDefiningValueCached(InVal, cache);
-            if (isa<PHINode>(base) || isa<SelectInst>(base)) {
+            Value* base = findBaseOrBDV(InVal, cache);
+            if( !isKnownBaseResult(base) ) {
               // Either conflict or base.
+              assert( states.count(base) );
               base = states[base].getBase();
               assert(base != NULL && "unknown PhiState!");
             }
@@ -1827,9 +2079,10 @@ namespace {
             Value *InVal = sel->getOperand(i);
             // Find either the defining value for the PHI or the normal base for
             // a non-phi node
-            Value* base = findBaseDefiningValueCached(InVal, cache);
-            if (isa<PHINode>(base) || isa<SelectInst>(base)) {
+            Value* base = findBaseOrBDV(InVal, cache);
+            if( !isKnownBaseResult(base) ) {
               // Either conflict or base.
+              assert( states.count(base) );
               base = states[base].getBase();
               assert(base != NULL && "unknown PhiState!");
             }
@@ -1847,7 +2100,38 @@ namespace {
       }
     }
 
-    return states[def].getBase();
+
+    // Cache all of our results so we can cheaply reuse them
+    // NOTE: This is actually two caches: one of the base defining value
+    // relation and one of the base pointer relation!  FIXME
+    for (auto item : states ) {
+      Value* v = item.first;
+      Value* base = item.second.getBase();
+      assert(v && base);
+      assert( !isKnownBaseResult(v) && "why did it get added?");
+
+      if( TraceLSP ) {
+        string fromstr = cache.count(v) ?
+          (cache[v]->hasName() ? cache[v]->getName() : "") :
+          "none";
+        errs() << "Updating base value cache"
+               << " for: " << (v->hasName() ? v->getName() : "")
+               << " from: " << fromstr
+               << " to: " << (base->hasName() ? base->getName() : "") << "\n";
+      }
+      
+      assert( isKnownBaseResult(base) &&
+              "must be something we 'know' is a base pointer");
+      if( cache.count(v) ) {
+        // Once we transition from the BDV relation being store in the cache to
+        // the base relation being stored, it must be stable
+        assert(  (!isKnownBaseResult(cache[v]) || 
+                  cache[v] == base) && "base relation should be stable");
+      }
+      cache[v] = base;
+    }
+    assert( cache.find(def) != cache.end() );
+    return cache[def];
   }
 }
 /// For a set of live pointers (base and/or derived), identify the base
@@ -1855,27 +2139,17 @@ namespace {
 void SafepointPlacementImpl::findBasePointers(
     const std::set<llvm::Value*>& live,
     std::map<llvm::Value*, llvm::Value*>& base_pairs,
-    DominatorTree *DT, std::set<llvm::Value*>& newInsertedDefs) {
-
-  // PERF: We currently cache the queuries accross all live values in a given
-  // safepoint.  It might be reorg-ing the code to share this map across
-  // safepoints.  Probably not worth it for the moment since the dominators
-  // are the key performance inhibitor.  Where it might help is in needing
-  // fewer invalidations.
-  /* scope */ {
-    DefiningValueMapTy cache;
-    for(std::set<llvm::Value*>::iterator I = live.begin(), E = live.end();
-        I != E; I++) {
-      Value *ptr = *I;
-      Value *base = findBasePointer(ptr, cache, newInsertedDefs);
-      assert( base && "failed to find base pointer");
-      base_pairs[ptr] = base;
-      assert(!isa<Instruction>(base) ||
-             !isa<Instruction>(ptr) ||
-             DT->dominates(cast<Instruction>(base)->getParent(),
-                           cast<Instruction>(ptr)->getParent()) &&
-             "The base we found better dominate the derived pointer");
-    }
+    DominatorTree *DT, DefiningValueMapTy& DVCache,
+    std::set<llvm::Value*>& newInsertedDefs) {
+  for(Value* ptr : live) {
+    Value *base = findBasePointer(ptr, DVCache, newInsertedDefs);
+    assert( base && "failed to find base pointer");
+    base_pairs[ptr] = base;
+    assert((!isa<Instruction>(base) ||
+            !isa<Instruction>(ptr) ||
+            DT->dominates(cast<Instruction>(base)->getParent(),
+                          cast<Instruction>(ptr)->getParent())) &&
+           "The base we found better dominate the derived pointer");
   }
 }
 
@@ -1939,19 +2213,18 @@ namespace {
     std::vector<Value*>::const_iterator itr = std::find(livevec.begin(), livevec.end(), val);
     assert( livevec.end() != itr );
     size_t index = std::distance(livevec.begin(), itr);
-    assert( index >= 0 && index < livevec.size() );
+    assert( index < livevec.size() );
     return index;
   }
 }
 
 /// Inserts the actual code for a safepoint.  WARNING: Does not do any fixup
 /// to adjust users of the original live values.  That's the callers responsibility.
-std::pair<Instruction*, Instruction*>
-SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace */
-                                        llvm::CallInst* jvmStateCall,
-                                        const std::vector<llvm::Value*>& basePtrs,
-                                        const std::vector<llvm::Value*>& liveVariables,
-                                        std::vector<llvm::Instruction*>& newDefs) {
+void SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace */
+                                             llvm::CallInst* jvmStateCall,
+                                             const std::vector<llvm::Value*>& basePtrs,
+                                             const std::vector<llvm::Value*>& liveVariables,
+                                             SafepointPlacementImpl::PartiallyConstructedSafepointRecord& result) {
   assert( basePtrs.size() == liveVariables.size() );
   
   BasicBlock* BB = CS.getInstruction()->getParent();
@@ -2014,10 +2287,14 @@ SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace */
     JVMState jvmState(jvmStateCall);
 
     for (int i = 0; i < jvmState.numStackElements(); i++) {
+      args.push_back(ConstantInt::get(
+          i32Ty, jvmState.stackElementTypeAt(i).coerceToInt()));
       args.push_back(jvmState.stackElementAt(i));
     }
 
     for (int i = 0; i < jvmState.numLocals(); i++) {
+      args.push_back(ConstantInt::get(
+          i32Ty, jvmState.localTypeAt(i).coerceToInt()));
       args.push_back(jvmState.localAt(i));
     }
 
@@ -2126,22 +2403,11 @@ SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace */
     args.push_back( token );
     gc_result = Builder.CreateCall(gc_result_func, args, CS.getInstruction()->hasName() ? CS.getInstruction()->getName() : "");
 
-    // Replace all uses with the new call
-    CS.getInstruction()->replaceAllUsesWith(gc_result);
   }
-
-  // Now that we've handled all uses, remove the original call itself
-  // Note: The insert point can't be the deleted instruction!
-  CS.getInstruction()->eraseFromParent();
-  /* scope */ {
-    // trip an assert if somehow this isn't a terminator
-    TerminatorInst* TI = BB->getTerminator();
-    (void)TI;
-    assert( (CS.isCall() || TI == token) && "newly insert invoke is not terminator?");
-  }
-
+  result.result = gc_result;
 
   // Second, create a gc.relocate for every live variable
+  std::vector<llvm::Instruction*> newDefs;
   for(unsigned i = 0; i < liveVariables.size(); i++) {
     // We generate a (potentially) unique declaration for every pointer type
     // combination.  This results is some blow up the function declarations in
@@ -2185,61 +2451,11 @@ SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace */
 
   // Sanity check our results - this is slightly non-trivial due to invokes
   VerifySafepointBounds(bounds);
-  
-  return bounds;
+
+  result.safepoint = bounds;
 }
 
 namespace {
-
-  bool isKnownBasePointer(Value* def) {
-    // Note: In practice, newDef will always be a gc_relocate in which case
-    // this check is nearly trivial.  We could use simpler code here, but this
-    // is correct in general and might be useful in the future.
-    
-    // Strip and bitcasts, zero geps, or aliases (does not effect baseness)
-    def = def->stripPointerCasts();
-
-    // If we encounter something which we know is a base value from a previous
-    // iteration of safepoint insertion, we can just use that.
-    if( isa<Instruction>(def) && cast<Instruction>(def)->getMetadata("is_base_value") ) {
-      // If it's a base phi directly inserted by this algorithm, it's okay
-      return true;
-    }
-
-    // Rather than duplicate a lot of complex logic, just use the base defining
-    // value routine as a helper.  If the base defining value is the def (minus
-    // known bitcasts, etc..), def is a base.  If it's not, it likely isn't.
-    Value* base = findBaseDefiningValue(def);
-    if( base == def &&
-        !isa<PHINode>(def) &&
-        !isa<SelectInst>(def) ) {
-      return true;
-    }
-    return false;
-  }
-  
-  /// helper function for insertPHIs -- is it valid for a new Phi use of the oldDef
-  /// to be inserted into this BB?  Generally, this comes down to dominators
-  /// via SSA properties, but there's a couple special cases.
-  bool validLocationForNewPhi(DominatorTree& DT, Value* oldDef, BasicBlock* candidate) {
-    assert( !isa<GlobalVariable>(oldDef) && "Can't be rewriting global");
-    if( isa<Argument>(oldDef) ) {
-      //use can be anywhere in function
-      return true;
-    }
-    if( isa<UndefValue>(oldDef) ) {
-      //mainly useful for bugpoint
-      return true;
-    }
-
-    // The basic block is dominated by the original definition
-    return DT.dominates(cast<Instruction>(oldDef), candidate);
-
-    // Note: We do not need to handle PHIs just outside the dominated region
-    // here.  This check is for *new* PHIs and we'll never need to add one
-    // outside that region.  We may need to update *old* phis outside that region
-  }
-
   bool atLeastOnePhiInBB(const set<PHINode*>& phis, const BasicBlock* BB) {
     for(set<PHINode*>::iterator itr = phis.begin(), end = phis.end();
         itr != end; itr++) {
@@ -2251,14 +2467,10 @@ namespace {
     return false;
   }
 
-  void updatePHIUses(DominatorTree& DT, Value* oldDef, std::map<BasicBlock*, Instruction*>& seen, set<PHINode*>& newPHIs, bool isNewPhi) {
+  void updatePHIUses(DominatorTree& DT, Value* oldDef, std::map<BasicBlock*, Value*>& seen, set<PHINode*>& newPHIs, bool isNewPhi) {
     for(std::set<PHINode*>::iterator itr = newPHIs.begin(), end = newPHIs.end();
         itr != end; itr++) {
       PHINode* phi = *itr;
-      // Check that the newly inserted PHIs don't continue outside the region
-      // dominated by the original definition whose uses we're updating.
-      assert( (!isNewPhi || validLocationForNewPhi(DT, oldDef, phi->getParent())) &&
-              "Phi found at location incompatible with original definition");
 
       BasicBlock* BB = phi->getParent();
       if(!isNewPhi) {
@@ -2268,6 +2480,11 @@ namespace {
       }
       
       assert( pred_begin(BB) != pred_end(BB) && "shouldn't reach block without predecessors");
+      // We could have several same incoming basicblocks into the phi node (think about a switch case),
+      // and they will carry the same value across the edge as long as their incoming and destination
+      // block are the same, and won't break our flow analysis.
+
+      // this will walk through all predecessors (and could have duplicated basicblocks)
       for(pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; PI++) {
         BasicBlock* pred = *PI;
         Value* def = NULL;
@@ -2277,7 +2494,7 @@ namespace {
           // Note: seen[pred] may actual dominate phi.  In particular,
           // backedges of loops with a def in the preheader make this really
           // common.  The phi is still needed.
-          assert( isPotentiallyReachable(seen[pred]->getParent(), BB, &DT) && "sanity check - provably reachable by alg above.");
+          //          assert( isPotentiallyReachable(seen[pred]->getParent(), BB, &DT) && "sanity check - provably reachable by alg above.");
         } else if( seen.find(pred) != seen.end() &&
                    NULL == seen[pred] ) {
           // We encountered a kill here.  By assumption, the input is invalid
@@ -2294,57 +2511,41 @@ namespace {
           def = ConstantPointerNull::get(cast<PointerType>(phi->getType()));
         } else {
           assert( seen.find(pred) == seen.end() && "kill's should have been handled above");
-          if( isNewPhi ) {
-
-            //There are two cases here:
-            // 1) reachable from a path which doesn't include the safepoint
-            // 2) reachable from along a path from this safepoint which
-            // includes another
-            // The appropriate answers are different!  How resolve?
-            
-            // We didn't find this predecessor when walking forward from the
-            // safepoint.  As a result, it must be a path which skips the
-            // safepoint entirely.  Thus, the original def is correct.
-            def = oldDef;
-          } else {
-            // We didn't see this edge, so the original phi input value is correct
-            int idx = phi->getBasicBlockIndex(pred);
-            assert( idx >= 0 && "incoming edge must exist!");
-            def = phi->getIncomingValue(idx);
-          }
+          // This must be coming from an unreachable block
+          def = ConstantPointerNull::get(cast<PointerType>(phi->getType()));
           // Can't assert unreachable since routine is conservative about reachability
         }
         assert(def && "must have found a def");
         if( isNewPhi ) {
           phi->addIncoming(def, pred);
         } else {
-          int idx = phi->getBasicBlockIndex(pred);
-          assert( idx >= 0 && "incoming edge must exist!");
+          // update all incoming values related to this predecessor
+          for (size_t i = 0; i < phi->getNumIncomingValues(); i++) {
+            // This check and set is effectively a path-dependent
+            // replaceUsesOfWith.  We change phi nodes of the form
+            //
+            //  bblock:
+            //    relocated value for %old on this path is %new
+            //
+            //    m = phi ... [ %old, %bblock ]
+            //
+            // to
+            //
+            //  bblock:
+            //    relocated value for %old on this path is %new
+            //
+            //    m = phi ... [ %new, %bblock ]
+            //
+            // We need the check to filter phi nodes like
+            //
+            //  bblock:
+            //    relocated value for %old on this path is %new
+            //
+            //    m = phi ... [ %unrelated_value, %bblock ]
 
-          // This check and set is effectively a path-dependent
-          // replaceUsesOfWith.  We change phi nodes of the form
-          //
-          //  bblock:
-          //    relocated value for %old on this path is %new
-          //
-          //    m = phi ... [ %old, %bblock ]
-          //
-          // to
-          //
-          //  bblock:
-          //    relocated value for %old on this path is %new
-          //
-          //    m = phi ... [ %new, %bblock ]
-          //
-          // We need the check to filter phi nodes like
-          //
-          //  bblock:
-          //    relocated value for %old on this path is %new
-          //
-          //    m = phi ... [ %unrelated_value, %bblock ]
-
-          if (phi->getIncomingValue(idx) == oldDef) {
-            phi->setIncomingValue(idx, def);
+            if (phi->getIncomingBlock(i) == pred && phi->getIncomingValue(i) == oldDef) {
+              phi->setIncomingValue(i, def);
+            }
           }
         }
       }
@@ -2356,59 +2557,128 @@ namespace {
   }
 }
 
+void SafepointPlacementImpl::relocationViaAlloca(Function& F, DominatorTree& DT, const std::vector<Value*>& live, const std::vector<struct PartiallyConstructedSafepointRecord>& records) {
+#ifndef NDEBUG
+  int initialAllocaNum = 0;
+
+  // record initial number of allocas
+  for (Function::const_iterator I = F.begin(), E = F.end(); I != E; I++) {
+    for (BasicBlock::const_iterator II = (*I).begin(), EE = (*I).end(); II != EE; II++) {
+      if (isa<AllocaInst>(*II))
+        initialAllocaNum++;
+    }
+  }
+#endif
+
+  std::map<Value*, Value*> allocaMap;
+  std::vector<AllocaInst*> PromotableAllocas;
+
+  // emit alloca for each live gc pointer
+  for(unsigned i = 0; i < live.size(); i++) {
+    Value* liveValue = live[i];
+    AllocaInst* alloca = new AllocaInst(liveValue->getType() , "", F.getEntryBlock().getFirstNonPHI());
+    allocaMap[liveValue] = alloca;
+    PromotableAllocas.push_back(alloca);
+  }
+
+  // update use with load allocas and add store for gc_relocated
+  for (std::map<Value*,Value*>::const_iterator I = allocaMap.begin(), E = allocaMap.end();
+      I != E; ++I) {
+    Value* def = I->first;
+    Value* alloca = I->second;
+
+    // update gc pointer after each statepoint
+    // either store a relocated value or null (if no relocated value found for
+    // this gc pointer and it is not a gc_result)
+    // this must happen before we update the statepoint with load of alloca
+    // otherwise we lose the link between statepoint and old def
+    for (size_t i = 0; i < records.size(); i++) {
+      const struct PartiallyConstructedSafepointRecord& info = records[i];
+      Value* relocatedValue = findRelocateValueAtSP(info.safepoint.first, def);
+      if (relocatedValue != NULL) {
+        StoreInst* store = new StoreInst(relocatedValue, alloca);
+        store->insertAfter(cast<Instruction>(relocatedValue));
+      } else if (def != info.result){
+        StoreInst* store = new StoreInst(ConstantPointerNull::get(cast<PointerType>(def->getType())), alloca);
+        store->insertAfter(info.safepoint.second);
+      }
+    }
+
+    // we pre-record the uses of allocas so that we dont have to worry about later update
+    // that change the user information.
+    std::vector<Instruction*> uses;
+
+    for (Value::user_iterator userIterator = def->user_begin(), userEnd = def->user_end();
+        userIterator != userEnd; ++userIterator) {
+      uses.push_back(dyn_cast<Instruction>(*userIterator));
+    }
+
+    unique_unsorted(uses);
+
+    for (std::vector<Instruction*>::iterator useIterator = uses.begin() ; useIterator != uses.end();
+        ++useIterator) {
+      Instruction* use = *useIterator;
+      if (isa<PHINode>(use)) {
+        PHINode* phi = cast<PHINode>(use);
+        for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
+          if (def == phi->getIncomingValue(i)) {
+            LoadInst* load = new LoadInst(alloca, "", phi->getIncomingBlock(i)->getTerminator());
+            phi->setIncomingValue(i, load);
+          }
+        }
+      } else {
+        LoadInst* load = new LoadInst(alloca, "", use);
+        use->replaceUsesOfWith(def, load);
+      }
+    }
+
+    // emit store for the initial gc value
+    // store must be inserted after load, otherwise store will be in alloca's use list and an extra load will be inserted before it
+    StoreInst* store = new StoreInst(def, alloca);
+    if (isa<Instruction>(def)) {
+      store->insertAfter(cast<Instruction>(def));
+    } else {
+      assert((isa<Argument>(def) || isa<GlobalVariable>(def)) && "Must be argument or global");
+      store->insertAfter(cast<Instruction>(alloca));
+    }
+  }
+
+  assert(PromotableAllocas.size() == live.size() && "we must have the same allocas with lives");
+  if (!PromotableAllocas.empty()) {
+    // apply mem2reg to promote alloca to SSA
+    PromoteMemToReg(PromotableAllocas, DT);
+  }
+
+#ifndef NDEBUG
+  for (Function::const_iterator I = F.begin(), E = F.end(); I != E; I++) {
+    for (BasicBlock::const_iterator II = (*I).begin(), EE = (*I).end(); II != EE; II++) {
+      if (isa<AllocaInst>(*II))
+        initialAllocaNum--;
+    }
+  }
+  assert(initialAllocaNum == 0 && "We must not introduce any extra allocas");
+#endif
+}
+
 /* Note: We settled on using a 'simple' data flow algorithm after experimenting
    with a dominance based alogrithm.  This can and should be improved, but the
    inductive invariants turned out to be suprisingly complicated and bugprone.
 */
-void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDef, Instruction* newDef, std::pair<Instruction*, Instruction*> safepoint) {
+void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F, Value* oldDef) {
 
   // PERF: most of this could be done for all the updated values at once.  It
   // should be fairly easy to rewrite this to work on vectors of old and new
   // defs.
 
-  assert((isa<Argument>(oldDef) || isa<UndefValue>(oldDef) ||
-          DT.dominates(cast<Instruction>(oldDef), newDef)) && "inserted def not well structured");
-
-  // This check is conservative, it can return false when something is actually
-  // a base, but it can not legally do the oposite.  
-  bool isKnownBase = isKnownBasePointer(newDef);
-    
-  BasicBlock* newBB = newDef->getParent();
   if (TraceLSP) {
-    errs() << "Relocating %" << oldDef->getName() << ", initial new def=%" << newDef->getName() << "\n";
+    errs() << "Relocating %" << oldDef->getName() << "\n";
   }
 
-  // Note: We're only update the subset of uses which are phi-reachable from
-  // the safepoint.  As a result, there can (and may) be uses of the original
-  // new def which we do NOT update.
-
-  // Update uses at the end of the safepoint, but do not mark the block as
-  // visited.  We need to come back around and update uses before the
-  // safepoint.
-  BasicBlock::iterator past(newDef); past++;
-  for(BasicBlock::iterator itr = past, end = newBB->end();
-        itr != end; itr++) {
-    Instruction* inst = &*itr;
-    inst->replaceUsesOfWith(oldDef, newDef);
-
-    if( isStatepoint(inst) ) {
-      // All paths are dead - don't continue the search beyond the first block
-      return;
-    }
-  }  
-      
-  // Now that we've reached the end of this block, we need to walk forward
-  // and find all the places we may need to insert PHIs.  This loop serves
-  // several purposes: it identifies the actual phi insertion sites, and it
-  // tracks the defining phi (on exit!) for every block explored.  The later
-  // is needed for getting the appropriate inputs to the newly inserted
-  // phis.
-
   // block to dominating def _on exit_
-  std::map<BasicBlock*, Instruction*> seen;
+  std::map<BasicBlock*, Value*> seen;
   // The basic block to be visited and the last dominating def _on entry_ of
   // that block
-  typedef std::pair<BasicBlock*, Instruction*> frontier_node;
+  typedef std::pair<BasicBlock*, Value*> frontier_node;
   std::vector<frontier_node> frontier;
   std::set<PHINode*> phis, newPHIs;
 
@@ -2417,7 +2687,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
   // the input edges will never be explored).  This allows us to terminate the
   // search when leaving the region dominated by oldDef without worrying about
   // phis in the blocks reachable immediately outside that region.
-  for (Value::use_iterator I = oldDef->use_begin(), E = oldDef->use_end();
+  for (Value::user_iterator I = oldDef->user_begin(), E = oldDef->user_end();
        I != E; I++) {
     Instruction* use = cast<Instruction>(*I);
     if( PHINode* phi = dyn_cast<PHINode>(use) ) {
@@ -2425,39 +2695,27 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
     }
   }
 
-  // Push the successors of the current block, not the current block.  This
-  // is key for dealing with a redefinition part way through a basic block
-  // with a backedge which makes the block reachable from a successor.  We
-  // may need to insert a PHI _above_ the newDef.  As a result, we have to
-  // make sure the newBB gets considered as any other block would.
-  for (succ_iterator PI = succ_begin(newBB), E = succ_end(newBB); PI != E; ++PI) {
-    BasicBlock *Succ = *PI;
-
-    // If the successor is outside of the region dominated by the original
-    // definition, we definitely don't need to (and can't legally) insert
-    // PHIs there or update values.  Don't add these to the worklist.
-    if( !validLocationForNewPhi(DT, oldDef, Succ) ) {
-      if (TraceLSP) {
-        errs() << "Skipping %" << Succ->getName() << " as outside def region\n";
-      }
-      continue;
-    }
-
-    // The exiting def of this block is the entry def of the successors
-    frontier.push_back( make_pair(Succ, newDef) );
+  if( isa<Argument>(oldDef) ) {
+    // Push the entry block (where the argument is valid on entry)
+    frontier.push_back( make_pair(&F.getEntryBlock(), oldDef) );
+  } else {
+    // Push the entry block (which has no valid def for old def)
+    frontier.push_back( make_pair(&F.getEntryBlock(), (Value*)NULL) );
   }
   while( !frontier.empty() ) {
     const frontier_node current = frontier.back();
     frontier.pop_back();
+ 
     BasicBlock* currentBB = current.first;
-    Instruction* currentDef = current.second;
+    Value* currentDef = current.second;
+
     if (TraceLSP) {
       errs() << "[TraceRelocations] entering %" << currentBB->getName() << " with value %"
-             << currentDef->getName() << "\n";
+             << (currentDef ? currentDef->getName() : "NULL") << "\n";
     }
 
-    assert( currentBB && currentDef && "Can't be null");
-    assert( currentDef->getType() == newDef->getType() && "Types of definitions must match");
+    assert( currentBB && "Can't be null");
+    assert( (!currentDef || currentDef->getType() == oldDef->getType()) && "Types of definitions must match");
     if( seen.find(currentBB) != seen.end() ) {
       // we've seen this before, no need to revisit
       // we need the check here since the same item could be on the worklist
@@ -2478,7 +2736,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
     // We can also have code which both uses the original value and a phi'd
     // value at once, etc.
     // A
-    // | \
+    // | \  -- suppress multiline comment warning
     // | B
     // | /
     // C - phi here
@@ -2499,26 +2757,13 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
     // We should never revisit a block we've already decided to insert a phi in.
     assert( !atLeastOnePhiInBB(newPHIs, currentBB) && "If it already has a phi, why are we here?");
 
-    bool isDeadPath = false;
-    Instruction* exitDef = NULL;
+    Value* exitDef = NULL;
 
     int num_preds = std::distance(pred_begin(currentBB), pred_end(currentBB));
     // The most trivial possible condition
     if( num_preds > 1 ) {
 
-      // If we encounter a relocation phi, we know - by assumption - that there
-      // are no uses of old def reachable from here.  As a result, we terminate
-      // our search along all paths leading through this basic block.
-      // If this block already contains a relocation phi, reuse it.  This is
-      // required for correctness since we may not know the proper relocation
-      // coming in along another path.  That path might not be reachable from
-      // the current safepoint.
-      // Note: This relies on the invariant that any relocation phi can only
-      // relocate a single original definition.  (not oldDef, the original one
-      // before any safepoints).  This is checked by the IR verifier.
-      // (Any relocation phi in this block should be a kill at the moment,
-      // we're being slightly more relaxed to allow removal of useles phis at a
-      // later date.)
+      // Sanity check the phis we encounter
       for(BasicBlock::iterator itr = currentBB->begin(), end = currentBB->getFirstNonPHI();
           itr != end; itr++) {
         PHINode* phi = cast<PHINode>(&*itr);
@@ -2528,8 +2773,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
           Value *InVal = phi->getIncomingValue(i);
           if( InVal == oldDef ) {
             if( phi->getMetadata("is_relocation_phi") ) {
-              assert( !isDeadPath && "Can't have two relocation phis for same value in same basic block");
-              isDeadPath = true;
+              // We've already seen this block, how'd we reach it again?
+              llvm_unreachable("relocation phi encountered!");
             }              
             // We'll need to make sure that this use gets updated properly.
             // Note that the phi is live _even if_ the basic block is not due
@@ -2538,20 +2783,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
             
             break;
           } //for NumPHIValues
-          // Note: Could break here, but then the assertion above doesn't get
-          // a chance to trigger.  Error checking is good.  :)
         }
-      } //for uses
-      if( isDeadPath ) {
-        //TODO: There should be no other uses reachable from this phi node
-
-        seen[currentBB] = NULL;
-        continue;
-        // Terminate this path in the search.  We encounted a safepoint, so by
-        // assumption there are no uses which need updated beyond here.  If there
-        // are, we want the verifier to yell loudly.  :)
       }
-
 
       // There's two parts of PHI insertion:
       // 1) Constructing the actual phi node
@@ -2560,18 +2793,24 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
       // We know enough to do 1 & 2, but not yet 3.  We'll have to come
       // back to that after finding all insert sites
       int num_preds = std::distance(pred_begin(currentBB), pred_end(currentBB));
-      PHINode* phi = PHINode::Create(newDef->getType(), num_preds, "relocated", &currentBB->front());
+      PHINode* phi = PHINode::Create(oldDef->getType(), num_preds, "relocated", &currentBB->front());
       // Add a metadata annotation marking this as a relocation phi
-      Value* const_1= ConstantInt::get(Type::getInt32Ty(newBB->getParent()->getParent()->getContext()), 1);         
-      MDNode* md = MDNode::get(newBB->getParent()->getParent()->getContext(), const_1);
+      Value* const_1= ConstantInt::get(Type::getInt32Ty(F.getParent()->getContext()), 1);         
+      MDNode* md = MDNode::get(F.getParent()->getContext(), const_1);
       phi->setMetadata("is_relocation_phi", md);
-      if( isKnownBase ) {
-        phi->setMetadata("is_base_value", md);
-      }
       newPHIs.insert(phi);
       exitDef = phi;
     } else {
       exitDef = currentDef;
+    }
+    for(BasicBlock::iterator itr = currentBB->begin(), end = currentBB->getFirstNonPHI();
+        itr != end; itr++) {
+      Instruction* inst = &*itr;
+      
+      if( inst == oldDef ) {
+        // We encountered the original definition
+        exitDef = oldDef;
+      }
     }
 
 
@@ -2581,54 +2820,33 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
     for(BasicBlock::iterator itr = currentBB->getFirstNonPHI(), end = currentBB->end();
         itr != end; itr++) {
       Instruction* inst = &*itr;
-      inst->replaceUsesOfWith(oldDef, exitDef);
-      if( isStatepoint(inst) ) {
-        // One slightly weird case that can happen is that we hit a safepoint
-        // after encountering a relocation phi. If we're not careful, we'll hit
-        // another join and insert a new relocation phi.  (i.e. we don't
-        // recongize the relocated value as the current def)
-        // Wc can end up with something like this:
-        // SP - while propagating this safepoint
-        // |
-        // PHI - backedge from bottom phi
-        // | \
-        // | SP - we hit this safepoint
-        // | /
-        // PHI - and have to use it's value here
-
-        // Note: We need to exclude the newBB from this critiria so that we can
-        // visit the newBB block again.  We *know* - since we reached here -
-        // that newDef is live out of this block
-        if( currentBB != newBB ) {
-          isDeadPath = true;
+      if( exitDef ) {
+        inst->replaceUsesOfWith(oldDef, exitDef);
+      } else {
+        for (Value::user_iterator I = oldDef->user_begin(), E = oldDef->user_end();
+             I != E; I++) {
+          Instruction* use = cast<Instruction>(*I);
+          assert( use != inst && "encountered a use without a valid def!" );
         }
-        // It would be tempting to continue with the relocated value, BUT...
-        // we could also encounter a safepoint which does not have this value
-        // live and relocated.  The easiest correct thing to do is just
-        // terminate the search (along this path) on this BB.
-        break;
+      }
+      
+      if( inst == oldDef ) {
+        // We encountered the original definition
+        exitDef = oldDef;
+      }
+      
+      if( isStatepoint(inst) ) {
+        // Find the relocated value after the safepoint
+
+        // If we didn't find the value relocated at the safepoint, it wasn't
+        // live across the safepoint.  There can be no uses reachable from her
+        // and a NULL will be assigned to it.
+        exitDef = findRelocateValueAtSP(inst, exitDef);
       }
     }
-    if( isDeadPath ) {
-      seen[currentBB] = NULL;
-      continue;
-      // Terminate this path in the search.  We encounted a safepoint, so by
-      // assumption there are no uses which need updated beyond here.  If there
-      // are, we want the verifier to yell loudly.  :)
-    }
     
-    // There's one special case where the block exit is not the newly
-    // insert Phi.  If we're revisiting the block we inserted the
-    // safepoint to, the exit def is the inserted one.  Note that all uses
-    // after the safepoint in this block were already updated, so we don't
-    // need to worry about that.  
-    if( currentBB == newBB ) {
-      exitDef = newDef;
-    }
-
-    assert( exitDef && "Exiting def can't be null");
     if (TraceLSP) {
-      errs() << "[TraceRelocations] leaving %" << currentBB->getName() << " with value %" << exitDef->getName() << "\n";
+      errs() << "[TraceRelocations] leaving %" << currentBB->getName() << " with value %" << (exitDef ? exitDef->getName() : "NULL") << "\n";
     }
     assert(seen.find(currentBB) == seen.end() && "we're overwriting!");
     seen[currentBB] = exitDef;
@@ -2642,85 +2860,15 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Value* oldDe
           errs() << "Skipping %" << Succ->getName() << " as previously seen\n";
         }
         continue;
-      }
-
-      // If the successor is outside of the region dominated by the original
-      // definition, we definitely don't need to (and can't legally) insert
-      // PHIs there or update values.  Don't add these to the worklist.
-      if( !validLocationForNewPhi(DT, oldDef, Succ) ) {
-        if (TraceLSP) {
-          errs() << "Skipping %" << Succ->getName() << " as outside def region\n";
-        }
-        continue;
-      }
-        
+      }        
       // The exiting def of this block is the entry def of the successors
       frontier.push_back( make_pair(Succ, exitDef) );
     }
   }
 
-
-  /* We assume that any basic block not in seen was not reachable from the
-     safepoint.  Since we terminated the walk above early when we hit a
-     previous safepoint, we need to make sure we mark any block reachable from
-     that early safepoint as being invalid.  Otherwise, we'll try to insert a
-     use of oldDef if there is a backedge.
-
-     Note: This is a bit of hack.  It could (and possibly should) be integrated
-     into the walk above.  There's enough complexity in that code already that
-     I didn't want to risk another bug for what is honestly a pretty minor
-     corner case which causes verifier failures, but not actual code gen issues.
-  */
-  /* scope */ {
-    if (TraceLSP) {
-      errs() << "Populating kills through reachable paths..\n";
-    }
-    std::vector<BasicBlock*> worklist;
-    for (map<BasicBlock *, Instruction *>::iterator I = seen.begin(), E = seen.end(); I != E; ++I) {
-      if( NULL == I->second ) {
-        worklist.push_back(I->first);
-      }
-    }
-    while( !worklist.empty() ) {
-      BasicBlock* currentBB = worklist.back();
-      worklist.pop_back();
-      
-      if( seen.find(currentBB) == seen.end() ) {
-        seen[currentBB] = NULL;
-      }
-      
-      for (succ_iterator PI = succ_begin(currentBB), E = succ_end(currentBB); PI != E; ++PI) {
-        BasicBlock *Succ = *PI;
-        if( seen.find(Succ) != seen.end() ) {
-          if (TraceLSP) {
-            errs() << "Skipping %" << Succ->getName() << " as previously seen\n";
-          }
-          continue;
-        }
-        
-        if( !validLocationForNewPhi(DT, oldDef, Succ) ) {
-          if (TraceLSP) {
-            errs() << "Skipping %" << Succ->getName() << " as outside def region\n";
-          }
-          continue;
-        }
-        
-        worklist.push_back(Succ);
-      }
-    }
-  }
-
-  // 'Visit' the initial block if we didn't encounter it in our traversal.  This
-  // is required for the correctness of updatePHIUses since we inspect
-  // predecessors.  We assume any input we haven't seen must provide the
-  // original oldDef where the start block should provide the newDef.
-  if( seen.find(newBB) == seen.end() ) {
-    seen[newBB] = newDef;
-  }
-
   if (TraceLSP) {
     errs() << "[TraceRelocations] map<BasicBlock *, Instruction *> seen == \n";
-    for (map<BasicBlock *, Instruction *>::iterator I = seen.begin(), E = seen.end(); I != E; ++I) {
+    for (map<BasicBlock *, Value *>::iterator I = seen.begin(), E = seen.end(); I != E; ++I) {
       errs() << "\tseen[%" << I->first->getName() << "] = %" << (I->second ? I->second->getName() : "NULL") << "\n";
     }
   }

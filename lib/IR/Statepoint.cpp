@@ -62,32 +62,6 @@ bool llvm::isGCResult(const Instruction* inst) {
   return false;
 }
 
-
-const Instruction* llvm::StatepointOperands::getRelocatedPtr(Value* ptr) {
-  bool found = false;
-  for(ImmutableCallSite::arg_iterator itr = gc_args_begin(), end = gc_args_end();
-      itr != end; itr++) {
-    if( *itr == ptr ) {
-      found = true;
-      break;
-    }
-  }
-  assert( found && "Can only relocate arguments of this statepoint");
-
-  const Instruction* inst = _statepoint.getInstruction();
-  for (Value::const_use_iterator I = inst->use_begin(), E = inst->use_end();
-       I != E; I++) {
-    const Instruction* use = cast<Instruction>(*I);
-    if( isGCRelocate(use) ) {
-      GCRelocateOperands relocate(use);
-      if( relocate.derivedPtr() == ptr ) {
-        return inst;
-      }
-    }
-  }
-  llvm_unreachable("should have found the relocated value...");
-}
-
 extern cl::opt<bool> AllFunctions;
 
 bool llvm::isGCPointerType(llvm::Type* Ty) {

@@ -4,7 +4,8 @@
 
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/Support/CallSite.h"
+#include "llvm/IR/JVMState.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/Support/Compiler.h"
 
 namespace llvm {
@@ -19,81 +20,149 @@ namespace llvm {
   bool isGCResult(const Instruction* inst);
   bool isGCResult(const ImmutableCallSite& CS);
 
-// A helper class for access statepoint arguments.  Note, this does
-// NOT take ownership of the IR and should be used only as a local stack object.
-class StatepointOperands {
-  ImmutableCallSite  _statepoint;
+template<typename InstructionTy, typename ValueTy, typename CallSiteTy>
+class StatepointBase {
+  CallSiteTy callSite;
   void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
   void *operator new(size_t s) LLVM_DELETED_FUNCTION;
 
- public:
-  StatepointOperands(const Instruction* inst)
-    : _statepoint(inst) {
-    assert( isStatepoint(inst) );
+ protected:
+  explicit StatepointBase(InstructionTy* I) : callSite(I) {
+    assert(isStatepoint(I));
   }
-  StatepointOperands(CallSite CS)
-    : _statepoint(CS) {
-    assert( isStatepoint(CS) );
+  explicit StatepointBase(CallSiteTy CS) : callSite(CS) {
+    assert(isStatepoint(CS));
   }
 
-  const Value *actualCallee() {
-    return _statepoint.getArgument(0);
+ public:
+  ValueTy *actualCallee() {
+    return callSite.getArgument(0);
   }
   int numCallArgs() {
-    return cast<ConstantInt>(_statepoint.getArgument(1))->getZExtValue();
+    return cast<ConstantInt>(callSite.getArgument(1))->getZExtValue();
   }
   int bci() {
-    return cast<ConstantInt>(_statepoint.getArgument(3))->getZExtValue();
+    return cast<ConstantInt>(callSite.getArgument(3))->getZExtValue();
   }
-  int numJavaStackArgs() {
-    return cast<ConstantInt>(_statepoint.getArgument(4))->getZExtValue();
+  int numJavaStackElements() {
+    return cast<ConstantInt>(callSite.getArgument(4))->getZExtValue();
   }
-  int numJavaLocalArgs() {
-    return cast<ConstantInt>(_statepoint.getArgument(5))->getZExtValue();
+  int numJavaLocals() {
+    return cast<ConstantInt>(callSite.getArgument(5))->getZExtValue();
   }
-  int numJavaMonitorArgs() {
-    return cast<ConstantInt>(_statepoint.getArgument(6))->getZExtValue();
+  int numJavaMonitors() {
+    return cast<ConstantInt>(callSite.getArgument(6))->getZExtValue();
   }
 
-  ImmutableCallSite::arg_iterator call_args_begin() {
+  ValueTy *javaStackElementAt(int i) {
+    assert(i >= 0 && i < numJavaStackElements() && "out of bounds!");
+    return *(vm_state_stack_begin() + 2 * i + 1);
+  }
+  OpaqueJVMTypeID javaStackElementTypeAt(int i) {
+    assert(i >= 0 && i < numJavaStackElements() && "out of bounds!");
+    int tyInt =
+        cast<ConstantInt>(*(vm_state_stack_begin() + 2 * i))->getZExtValue();
+    return OpaqueJVMTypeID(tyInt);
+  }
+
+  ValueTy *javaLocalAt(int i) {
+    assert(i >= 0 && i < numJavaLocals() && "out of bounds!");
+    return *(vm_state_begin() + 2 * numJavaStackElements() + 2 * i + 1);
+  }
+  OpaqueJVMTypeID javaLocalTypeAt(int i) {
+    assert(i >= 0 && i < numJavaLocals() && "out of bounds!");
+    int tyInt =
+        cast<ConstantInt>(*(vm_state_locals_begin() + 2 * i))->getZExtValue();
+    return OpaqueJVMTypeID(tyInt);
+  }
+
+  ValueTy *javaMonitorAt(int i) {
+    assert(i >= 0 && i < numJavaMonitors() && "out of bounds!");
+    return *(vm_state_begin() + 2 * numJavaStackElements() + 2 * numJavaLocals() + i);
+  }
+
+  typename CallSiteTy::arg_iterator call_args_begin() {
     int offset = 7;
-    assert( offset <= std::distance(_statepoint.arg_begin(), _statepoint.arg_end()) );
-    return _statepoint.arg_begin() + offset;
+    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    return callSite.arg_begin() + offset;
   }
-  ImmutableCallSite::arg_iterator  call_args_end() {
+  typename CallSiteTy::arg_iterator call_args_end() {
     int offset = 7 + numCallArgs();
-    assert( offset <= std::distance(_statepoint.arg_begin(), _statepoint.arg_end()) );
-    return _statepoint.arg_begin() + offset;
+    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    return callSite.arg_begin() + offset;
   }
 
-  ImmutableCallSite::arg_iterator deopt_args_begin() {
+  typename CallSiteTy::arg_iterator vm_state_begin() {
     return call_args_end();
   }
-  ImmutableCallSite::arg_iterator  deopt_args_end() {
-    int offset = 7 + numCallArgs() + numJavaStackArgs() + numJavaLocalArgs() + numJavaMonitorArgs();
-    assert( offset <= std::distance(_statepoint.arg_begin(), _statepoint.arg_end()) );
-    return _statepoint.arg_begin() + offset;
-  }
-  
-  ImmutableCallSite::arg_iterator  gc_args_begin() {
-    return deopt_args_end();
-  }
-  ImmutableCallSite::arg_iterator  gc_args_end() {
-    return _statepoint.arg_end();
+  typename CallSiteTy::arg_iterator vm_state_end() {
+    int offset = 7 + numCallArgs() + 2 * numJavaStackElements() +
+                 2 * numJavaLocals() + numJavaMonitors();
+    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    return callSite.arg_begin() + offset;
   }
 
-  // Return the gc_relocate which relocates this pointer
-  const Instruction* getRelocatedPtr(Value* ptr);
+  typename CallSiteTy::arg_iterator vm_state_stack_begin() {
+    return vm_state_begin();
+  }
+  typename CallSiteTy::arg_iterator vm_state_stack_end() {
+    return vm_state_stack_begin() + 2 * numJavaStackElements();
+  }
+
+  typename CallSiteTy::arg_iterator vm_state_locals_begin() {
+    return vm_state_stack_end();
+  }
+  typename CallSiteTy::arg_iterator vm_state_locals_end() {
+    return vm_state_locals_begin() + 2 * numJavaLocals();
+  }
+
+  typename CallSiteTy::arg_iterator vm_state_monitors_begin() {
+    return vm_state_locals_end();
+  }
+  typename CallSiteTy::arg_iterator vm_state_monitors_end() {
+    return vm_state_end();
+  }
+
+
+  typename CallSiteTy::arg_iterator gc_args_begin() {
+    return vm_state_end();
+  }
+  typename CallSiteTy::arg_iterator gc_args_end() {
+    return callSite.arg_end();
+  }
 
 #ifndef NDEBUG
   void verify() {
     // The internal asserts in the iterator accessors do the rest.
-    assert(std::distance(call_args_end(), deopt_args_end()) >= 0);
-    assert(std::distance(deopt_args_end(), gc_args_end()) >= 0);
+    (void) call_args_begin();
+    (void) call_args_end();
+    (void) vm_state_begin();
+    (void) vm_state_end();
+    (void) gc_args_begin();
+    (void) gc_args_end();
   }
 #endif
 };
- 
+
+class ImmutableStatepoint : public StatepointBase<const Instruction,
+                                                  const Value,
+                                                  ImmutableCallSite> {
+  typedef StatepointBase<const Instruction, const Value, ImmutableCallSite>
+  Base;
+
+ public:
+  explicit ImmutableStatepoint(const Instruction *I) : Base(I) { }
+  explicit ImmutableStatepoint(ImmutableCallSite CS) : Base(CS) { }
+};
+
+class Statepoint : public StatepointBase<Instruction, Value, CallSite> {
+  typedef StatepointBase<Instruction, Value, CallSite> Base;
+
+ public:
+  explicit Statepoint(Instruction *I) : Base(I) { }
+  explicit Statepoint(CallSite CS) : Base(CS) { }
+};
+
 class GCRelocateOperands {
   ImmutableCallSite  _relocate;
  public:

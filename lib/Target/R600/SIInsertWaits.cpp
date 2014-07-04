@@ -97,13 +97,13 @@ private:
 public:
   SIInsertWaits(TargetMachine &tm) :
     MachineFunctionPass(ID),
-    TII(0),
-    TRI(0),
+    TII(nullptr),
+    TRI(nullptr),
     ExpInstrTypesSeen(0) { }
 
-  virtual bool runOnMachineFunction(MachineFunction &MF);
+  bool runOnMachineFunction(MachineFunction &MF) override;
 
-  const char *getPassName() const {
+  const char *getPassName() const override {
     return "SI insert wait  instructions";
   }
 
@@ -341,6 +341,8 @@ Counters SIInsertWaits::handleOperands(MachineInstr &MI) {
   return Result;
 }
 
+// FIXME: Insert waits listed in Table 4.2 "Required User-Inserted Wait States"
+// around other non-memory instructions.
 bool SIInsertWaits::runOnMachineFunction(MachineFunction &MF) {
   bool Changes = false;
 

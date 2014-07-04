@@ -33,7 +33,13 @@ void llvm::assertJVMStateSanity(const CallInst *vmState) {
   int64_t numLocals = cast<ConstantInt>(vmState->getArgOperand(2))->getSExtValue();
   int64_t numMons = cast<ConstantInt>(vmState->getArgOperand(3))->getSExtValue();
 
-  assert((numStack + numMons + numLocals) == (vmState->getNumArgOperands() - 4) &&
+  assert((2 * numStack + numMons + 2 * numLocals) == (vmState->getNumArgOperands() - 4) &&
          "invalid vm state!");
+
+  for (int i = 4; i < 4 + 2 * numStack + 2 * numLocals; i += 2) {
+    // These values are type tags and *have* to remain constant
+    // integers for correctness!
+    cast<ConstantInt>(vmState->getArgOperand(i));
+  }
 }
 #endif

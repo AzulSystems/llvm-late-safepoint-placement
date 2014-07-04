@@ -75,3 +75,93 @@ entry:
   store <8 x i32> %0, <8 x i32> addrspace(1)* %out
   ret void
 }
+
+; FUNC-LABEL: @test16
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; EG-CHECK: ADD_INT
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADD_I32
+define void @test16(<16 x i32> addrspace(1)* %out, <16 x i32> %a, <16 x i32> %b) {
+entry:
+  %0 = add <16 x i32> %a, %b
+  store <16 x i32> %0, <16 x i32> addrspace(1)* %out
+  ret void
+}
+
+; FUNC-LABEL: @add64
+; SI-CHECK: S_ADD_I32
+; SI-CHECK: S_ADDC_U32
+define void @add64(i64 addrspace(1)* %out, i64 %a, i64 %b) {
+entry:
+  %0 = add i64 %a, %b
+  store i64 %0, i64 addrspace(1)* %out
+  ret void
+}
+
+; The V_ADDC_U32 and V_ADD_I32 instruction can't read SGPRs, because they
+; use VCC.  The test is designed so that %a will be stored in an SGPR and
+; %0 will be stored in a VGPR, so the comiler will be forced to copy %a
+; to a VGPR before doing the add.
+
+; FUNC-LABEL: @add64_sgpr_vgpr
+; SI-CHECK-NOT: V_ADDC_U32_e32 s
+define void @add64_sgpr_vgpr(i64 addrspace(1)* %out, i64 %a, i64 addrspace(1)* %in) {
+entry:
+  %0 = load i64 addrspace(1)* %in
+  %1 = add i64 %a, %0
+  store i64 %1, i64 addrspace(1)* %out
+  ret void
+}
+
+; Test i64 add inside a branch.  We don't allow SALU instructions inside of
+; branches.
+; FIXME: We are being conservative here.  We could allow this in some cases.
+; FUNC-LABEL: @add64_in_branch
+; SI-CHECK-NOT: S_ADD_I32
+; SI-CHECK-NOT: S_ADDC_U32
+define void @add64_in_branch(i64 addrspace(1)* %out, i64 addrspace(1)* %in, i64 %a, i64 %b, i64 %c) {
+entry:
+  %0 = icmp eq i64 %a, 0
+  br i1 %0, label %if, label %else
+
+if:
+  %1 = load i64 addrspace(1)* %in
+  br label %endif
+
+else:
+  %2 = add i64 %a, %b
+  br label %endif
+
+endif:
+  %3 = phi i64 [%1, %if], [%2, %else]
+  store i64 %3, i64 addrspace(1)* %out
+  ret void
+}

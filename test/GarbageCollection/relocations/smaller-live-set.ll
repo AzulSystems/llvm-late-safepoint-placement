@@ -1,4 +1,4 @@
-; RUN: opt %s  -place-backedge-safepoints -place-call-safepoints -spp-all-functions -S 2>&1 | FileCheck %s
+; RUN: opt %s -place-safepoints -spp-no-entry -spp-all-functions -S 2>&1 | FileCheck %s
 
 ; This is testing a corner case in the relocation algorithm.  It is actually legal to
 ; encounter a kill (safepoint) before a newly inserted relocation phi.
