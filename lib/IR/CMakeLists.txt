@@ -3,7 +3,6 @@ add_llvm_library(LLVMCore
   Attributes.cpp
   AutoUpgrade.cpp
   BasicBlock.cpp
-  CallSite.cpp
   Comdat.cpp
   ConstantFold.cpp
   ConstantRange.cpp
@@ -26,6 +25,7 @@ add_llvm_library(LLVMCore
   Instruction.cpp
   Instructions.cpp
   IntrinsicInst.cpp
+  JVMState.cpp
   LLVMContext.cpp
   LLVMContextImpl.cpp
   LeakDetector.cpp
@@ -37,6 +37,8 @@ add_llvm_library(LLVMCore
   Pass.cpp
   PassManager.cpp
   PassRegistry.cpp
+  SafepointIRVerifier.cpp
+  Statepoint.cpp
   Type.cpp
   TypeFinder.cpp
   Use.cpp
