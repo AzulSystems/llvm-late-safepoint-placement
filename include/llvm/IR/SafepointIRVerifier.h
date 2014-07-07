@@ -4,12 +4,12 @@
 
 namespace llvm {
 
-  class Function;
-  class FunctionPass;
+class Function;
+class FunctionPass;
 
-  void verifySafepointIR(Function& F);
+void verifySafepointIR(Function &F);
 
-  FunctionPass* createSafepointIRVerifierPass();
+FunctionPass *createSafepointIRVerifierPass();
 }
 
-#endif //LLVM_IR_SAFEPOINT_IR_VERIFIER
+#endif // LLVM_IR_SAFEPOINT_IR_VERIFIER
