@@ -1894,8 +1894,6 @@ private:
 
   static PhiState pureMeet(const PhiState &stateA, const PhiState &stateB) {
     switch (stateA.getStatus()) {
-    default:
-      llvm_unreachable("extra state found?");
     case PhiState::Unknown:
       return stateB;
 
@@ -1917,7 +1915,6 @@ private:
     case PhiState::Conflict:
       return stateA;
     }
-    assert(false && "only three states!");
   }
 };
 
