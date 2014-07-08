@@ -606,7 +606,7 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
               "gc.safepoint_poll\n";
   }
   if (!shouldRun) {
-    return NULL;
+    return nullptr;
   }
 
   // Conceptually, this poll needs to be on method entry, but in practice, we
@@ -620,7 +620,7 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
 
   if (F.begin() == F.end()) {
     // Empty function, nothing was done.
-    return NULL;
+    return nullptr;
   }
 
   // Due to the way the frontend generates IR, we may have a couple of intial
@@ -640,7 +640,7 @@ static Instruction *findLocationForEntrySafepoint(Function &F,
       // split node
       break;
     }
-    if (NULL == nextBB->getUniquePredecessor()) {
+    if (nullptr == nextBB->getUniquePredecessor()) {
       // next node is a join node, stop here
       // PERF: There's technically no correctness reason we need to stop here.
       // We mostly stop to avoid weird looking situations like having an
@@ -846,7 +846,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
     struct PartiallyConstructedSafepointRecord &info = records[i];
     CallSite &CS = toUpdate[i];
     // locate the defining VM state object for this location
-    CallInst *vm_state = NULL;
+    CallInst *vm_state = nullptr;
     if (VMStateRequired()) {
       vm_state = findVMState(CS.getInstruction(), &DT);
       BUGPOINT_CLEAN_EXIT_IF(!vm_state);
@@ -1138,7 +1138,7 @@ void SafepointPlacementImpl::InsertSafepointPoll(
   // If your poll function includes an unreachable at the end, that's not
   // valid.  Bugpoint likes to create this, so check for it.
   BUGPOINT_CLEAN_EXIT_IF(!isPotentiallyReachable(&*start, &*after, NULL, NULL));
-  assert(isPotentiallyReachable(&*start, &*after, NULL, NULL) &&
+  assert(isPotentiallyReachable(&*start, &*after, nullptr, nullptr) &&
          "malformed poll function");
 
   scanInlinedCode(&*(start), &*(after), calls, BBs);
@@ -1221,7 +1221,7 @@ void SafepointPlacementImpl::analyzeParsePointLiveness(
 
   BasicBlock *BB = inst->getParent();
   std::set<llvm::Value *> liveset;
-  findLiveGCValuesAtInst(inst, BB, DT, NULL, liveset);
+  findLiveGCValuesAtInst(inst, BB, DT, nullptr, liveset);
 
   if (PrintLiveSet) {
     // Note: This output is used by several of the test cases
@@ -1301,7 +1301,7 @@ void SafepointPlacementImpl::fixupLiveness(
       // Record new defs those are dominating and live at the safepoint (we
       // need to make sure def dominates safepoint since our liveness analysis
       // has this assumption)
-      if (isLiveAtSafepoint(inst, UserInst, *newDef, DT, NULL)) {
+      if (isLiveAtSafepoint(inst, UserInst, *newDef, DT, nullptr)) {
         // Add the live new defs into liveset and base_pairs
         liveset.insert(newDef);
         base_pairs[newDef] = newDef;
@@ -1703,7 +1703,7 @@ Value *findBaseDefiningValue(Value *I) {
   errs() << "unknown type: ";
   I->dump();
   assert(false && "unknown type");
-  return NULL;
+  return nullptr;
 }
 
 /// Returns the base defining value for this value.
@@ -1743,7 +1743,7 @@ Value *findRelocateValueAtSP(Instruction *statepoint, Value *def) {
       }
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 /// Given the result of a call to findBaseDefiningValue, or findBaseOrBDV,
@@ -1772,11 +1772,11 @@ public:
     Conflict
   };
 
-  PhiState(Status s, Value *b = NULL) : status(s), base(b) {
+  PhiState(Status s, Value *b = nullptr) : status(s), base(b) {
     assert(status != Base || b);
   }
   PhiState(Value *b) : status(Base), base(b) {}
-  PhiState() : status(Unknown), base(NULL) {}
+  PhiState() : status(Unknown), base(nullptr) {}
   PhiState(const PhiState &other) : status(other.status), base(other.base) {
     assert(status != Base || base);
   }
@@ -2064,7 +2064,7 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
             // Either conflict or base.
             assert(states.count(base));
             base = states[base].getBase();
-            assert(base != NULL && "unknown PhiState!");
+            assert(base != nullptr && "unknown PhiState!");
           }
           assert(base && "can't be null");
           // Must use original input BB since base may not be Instruction
@@ -2089,7 +2089,7 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
             // Either conflict or base.
             assert(states.count(base));
             base = states[base].getBase();
-            assert(base != NULL && "unknown PhiState!");
+            assert(base != nullptr && "unknown PhiState!");
           }
           assert(base && "can't be null");
           // Must use original input BB since base may not be Instruction
@@ -2189,14 +2189,14 @@ CallInst *SafepointPlacementImpl::findVMState(llvm::Instruction *term,
     BasicBlock *immediateDominator =
         DT->getNode(I->getParent())->getIDom()->getBlock();
     BUGPOINT_CLEAN_EXIT_IF(!immediateDominator);
-    if (immediateDominator == NULL)
+    if (immediateDominator == nullptr)
       break; // and crash!
 
     I = immediateDominator->rbegin();
     E = immediateDominator->rend();
   }
 
-  return NULL;
+  return nullptr;
 }
 
 namespace {
@@ -2323,7 +2323,7 @@ void SafepointPlacementImpl::CreateSafepoint(
   args.insert(args.end(), liveVariables.begin(), liveVariables.end());
 
   // Create the statepoint given all the arguments
-  Instruction *token = NULL;
+  Instruction *token = nullptr;
   if (CS.isCall()) {
     CallInst *toReplace = cast<CallInst>(CS.getInstruction());
     CallInst *call =
@@ -2357,7 +2357,7 @@ void SafepointPlacementImpl::CreateSafepoint(
     // Loop over any phi nodes in the original normal dest, update them to
     // point to the newly inserted block rather than the invoke BB.
     /* scope */ {
-      PHINode *PN = NULL;
+      PHINode *PN = nullptr;
       for (BasicBlock::iterator II = toReplace->getNormalDest()->begin();
            (PN = dyn_cast<PHINode>(II)); ++II) {
         int IDX = PN->getBasicBlockIndex(toReplace->getParent());
@@ -2395,11 +2395,11 @@ void SafepointPlacementImpl::CreateSafepoint(
   // gc_result hanging off the statepoint node we just inserted
 
   // Only add the gc_result iff there is actually a used result
-  Instruction *gc_result = NULL;
+  Instruction *gc_result = nullptr;
   if (!CS.getType()->isVoidTy() && !CS.getInstruction()->use_empty()) {
     vector<Type *> types;          // one per 'any' type
     types.push_back(CS.getType()); // result type
-    Value *gc_result_func = NULL;
+    Value *gc_result_func = nullptr;
     if (CS.getType()->isIntegerTy()) {
       gc_result_func =
           Intrinsic::getDeclaration(M, Intrinsic::gc_result_int, types);
@@ -2461,7 +2461,7 @@ void SafepointPlacementImpl::CreateSafepoint(
   // Need to pass through the last part of the safepoint block so that we
   // don't accidentally update uses in a following gc.relocate which is
   // still conceptually part of the same safepoint.  Gah.
-  Instruction *last = NULL;
+  Instruction *last = nullptr;
   if (!newDefs.empty()) {
     last = newDefs.back();
   } else if (gc_result) {
@@ -2512,15 +2512,15 @@ void updatePHIUses(DominatorTree &DT, Value *oldDef,
     // basicblocks)
     for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; PI++) {
       BasicBlock *pred = *PI;
-      Value *def = NULL;
-      if (seen.find(pred) != seen.end() && NULL != seen[pred]) {
+      Value *def = nullptr;
+      if (seen.find(pred) != seen.end() && nullptr != seen[pred]) {
         def = seen[pred];
         // Note: seen[pred] may actual dominate phi.  In particular,
         // backedges of loops with a def in the preheader make this really
         // common.  The phi is still needed.
         //          assert( isPotentiallyReachable(seen[pred]->getParent(), BB,
         // &DT) && "sanity check - provably reachable by alg above.");
-      } else if (seen.find(pred) != seen.end() && NULL == seen[pred]) {
+      } else if (seen.find(pred) != seen.end() && nullptr == seen[pred]) {
         // We encountered a kill here.  By assumption, the input is invalid
         // and doesn't matter.  This can happen when we insert one safepoint
         // which can reach another and the live set of the former is greater
@@ -2623,7 +2623,7 @@ void SafepointPlacementImpl::relocationViaAlloca(
     // otherwise we lose the link between statepoint and old def
     for (const struct PartiallyConstructedSafepointRecord &info : records) {
       Value *relocatedValue = findRelocateValueAtSP(info.safepoint.first, def);
-      if (relocatedValue != NULL) {
+      if (relocatedValue != nullptr) {
         StoreInst *store = new StoreInst(relocatedValue, alloca);
         store->insertAfter(cast<Instruction>(relocatedValue));
       } else if (def != info.result) {
@@ -2731,7 +2731,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
     frontier.push_back(make_pair(&F.getEntryBlock(), oldDef));
   } else {
     // Push the entry block (which has no valid def for old def)
-    frontier.push_back(make_pair(&F.getEntryBlock(), (Value *)NULL));
+    frontier.push_back(make_pair(&F.getEntryBlock(), (Value *)nullptr));
   }
   while (!frontier.empty()) {
     const frontier_node current = frontier.back();
@@ -2791,7 +2791,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
     assert(!atLeastOnePhiInBB(newPHIs, currentBB) &&
            "If it already has a phi, why are we here?");
 
-    Value *exitDef = NULL;
+    Value *exitDef = nullptr;
 
     int num_preds = std::distance(pred_begin(currentBB), pred_end(currentBB));
     // The most trivial possible condition
