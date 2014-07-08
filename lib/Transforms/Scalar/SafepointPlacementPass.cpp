@@ -188,8 +188,7 @@ struct PlaceSafepoints : public ModulePass {
   }
   virtual bool runOnModule(Module &M) {
     bool modified = false;
-    for (Module::iterator itr = M.begin(), end = M.end(); itr != end; itr++) {
-      Function &F = *itr;
+    for (Function &F : M) {
       modified |= runOnFunction(F);
     }
     return modified;
@@ -222,9 +221,7 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
     }
 
     // remove all the calls (i.e. uses of functions)
-    for (size_t i = 0; i < instToRemove.size(); i++) {
-      CallInst *CI = instToRemove[i];
-
+    for (CallInst *CI : instToRemove) {
       // Remove the use holding this call in place
       assert(CI->hasOneUse() && "must have exactly one use");
       StoreInst *User = cast<StoreInst>(*CI->user_begin());
@@ -234,15 +231,11 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
 
       // Remove the call itself
       CI->eraseFromParent();
-      instToRemove[i] = NULL;
     }
 
     // remove the functions which are now dead - note that the use of a set is
     // required since calls can be duplicated by the optimizer
-    for (std::set<Function *>::iterator itr = funcToRemove.begin(),
-                                        end = funcToRemove.end();
-         itr != end; itr++) {
-      Function *F = *itr;
+    for (Function *F : funcToRemove) {
       // The conditional is a safety check to handle another use which is
       // somehow hanging around.
       if (F->use_empty()) {
@@ -463,11 +456,9 @@ void addBasesAsLiveValues(std::set<Value *> &liveset,
   // themselves relocated.  We need to relocate them so that later inserted
   // safepoints can get the properly relocated base register.
   std::set<Value *> missing;
-  for (std::set<llvm::Value *>::iterator itr = liveset.begin(),
-                                         E = liveset.end();
-       itr != E; itr++) {
-    assert(base_pairs.find(*itr) != base_pairs.end());
-    Value *base = base_pairs[*itr];
+  for (Value *live : liveset) {
+    assert(base_pairs.find(live) != base_pairs.end());
+    Value *base = base_pairs[live];
     assert(base);
     if (liveset.find(base) == liveset.end()) {
       assert(base_pairs.find(base) == base_pairs.end());
@@ -480,10 +471,7 @@ void addBasesAsLiveValues(std::set<Value *> &liveset,
   // register placement gets screwed up once we lower to STATEPOINT
   // instructions.  This is an utter hack, but there doesn't seem to be a
   // better one.
-  for (std::set<llvm::Value *>::iterator itr = missing.begin(),
-                                         E = missing.end();
-       itr != E; itr++) {
-    Value *base = *itr;
+  for (Value *base : missing) {
     assert(base);
     liveset.insert(base);
     base_pairs[base] = base;
@@ -718,10 +706,9 @@ template <typename T> static void unique_unsorted(std::vector<T> &vec) {
   std::vector<T> tmp;
   vec.reserve(vec.size());
   std::swap(tmp, vec);
-  for (typename std::vector<T>::iterator itr = tmp.begin(), end = tmp.end();
-       itr != end; itr++) {
-    if (seen.insert(*itr).second) {
-      vec.push_back(*itr);
+  for (T &el : tmp) {
+    if (seen.insert(el).second) {
+      vec.push_back(el);
     }
   }
 }
@@ -744,8 +731,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   unique_unsorted(toUpdate);
 
   // sanity check the input
-  for (size_t i = 0; i < toUpdate.size(); i++) {
-    CallSite &CS = toUpdate[i];
+  for (const CallSite &CS : toUpdate) {
     assert(CS.getInstruction()->getParent()->getParent() == &F);
   }
 
@@ -759,8 +745,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   // we'll insert below.
   if (VMStateRequired()) {
     holders.reserve(holders.size() + toUpdate.size());
-    for (size_t i = 0; i < toUpdate.size(); i++) {
-      CallSite &CS = toUpdate[i];
+    for (const CallSite &CS : toUpdate) {
       assert(CS.isCall() && "implement invoke here");
 
       // This must tbe the same jvmstate we find later
@@ -784,9 +769,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   records.reserve(toUpdate.size());
   // A) Identify all gc pointers which are staticly live at the given call
   // site.
-  for (size_t i = 0; i < toUpdate.size(); i++) {
-    CallSite &CS = toUpdate[i];
-
+  for (const CallSite &CS : toUpdate) {
     struct PartiallyConstructedSafepointRecord info;
     analyzeParsePointLiveness(DT, CS, info);
     records.push_back(info);
@@ -818,8 +801,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   //   safepoint 2
   //   br loop
   std::set<llvm::Value *> allInsertedDefs;
-  for (size_t i = 0; i < records.size(); i++) {
-    struct PartiallyConstructedSafepointRecord &info = records[i];
+  for (const struct PartiallyConstructedSafepointRecord &info : records) {
     allInsertedDefs.insert(info.newInsertedDefs.begin(),
                            info.newInsertedDefs.end());
   }
@@ -834,10 +816,8 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
     Function *Func = getUseHolder(F);
 
     std::vector<Value *> bases;
-    for (std::map<Value *, Value *>::const_iterator I = info.base_pairs.begin(),
-                                                    E = info.base_pairs.end();
-         I != E; ++I) {
-      bases.push_back(I->second);
+    for (const std::pair<Value *, Value *> &I : info.base_pairs) {
+      bases.push_back(I.second);
     }
 
     assert(CS.isCall() && "implement invoke here");
@@ -854,9 +834,8 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
 
     fixupLiveness(DT, CS, allInsertedDefs, info);
   }
-  for (size_t i = 0; i < holders.size(); i++) {
-    holders[i]->eraseFromParent();
-    holders[i] = NULL;
+  for (CallInst *Holder : holders) {
+    Holder->eraseFromParent();
   }
   holders.clear();
 
@@ -917,8 +896,7 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
 
   // Do all the fixups of the original live variables to their relocated selves
   std::vector<Value *> live;
-  for (size_t i = 0; i < records.size(); i++) {
-    struct PartiallyConstructedSafepointRecord &info = records[i];
+  for (const struct PartiallyConstructedSafepointRecord &info : records) {
     // We can't simply save the live set from the original insertion.  One of
     // the live values might be the result of a call which needs a safepoint.
     // That Value* no longer exists and we need to use the new gc_result.
@@ -933,8 +911,8 @@ static bool insertParsePoints(Function &F, DominatorTree &DT,
   if (RelocViaAlloc) {
     relocationViaAlloca(F, DT, live, records);
   } else {
-    for (unsigned i = 0; i < live.size(); i++) {
-      insertPHIsForNewDef(DT, F, live[i]);
+    for (Value *Live : live) {
+      insertPHIsForNewDef(DT, F, Live);
     }
   }
 
@@ -995,11 +973,9 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
     DT.recalculate(F);
 
     // Insert a poll at each point the analysis pass identified
-    for (size_t i = 0; i < PBS->PollLocations.size(); i++) {
+    for (TerminatorInst *term : PBS->PollLocations) {
       // We are inserting a poll, the function is modified
       modified = true;
-
-      TerminatorInst *term = PBS->PollLocations[i];
 
       // VM State handling is handled when making the runtime call sites
       // parsable
@@ -1185,16 +1161,15 @@ void SafepointPlacementImpl::InsertSafepointPoll(
   // parse the last frame when we actually take  the safepoint (i.e. execute
   // the slow path)
   assert(ParsePointsNeeded.empty());
-  for (size_t i = 0; i < calls.size(); i++) {
-
+  for (CallInst *Call : calls) {
     // No safepoint needed or wanted
-    if (!needsStatepoint(calls[i])) {
+    if (!needsStatepoint(Call)) {
       continue;
     }
 
     // These are likely runtime calls.  Should we assert that via calling
     // convention or something?
-    ParsePointsNeeded.push_back(CallSite(calls[i]));
+    ParsePointsNeeded.push_back(CallSite(Call));
   }
   assert(ParsePointsNeeded.size() <= calls.size());
 }
@@ -1256,9 +1231,8 @@ void SafepointPlacementImpl::analyzeParsePointLiveness(
     temp.insert(temp.end(), liveset.begin(), liveset.end());
     std::sort(temp.begin(), temp.end(), order_by_name);
     errs() << "Live Variables:\n";
-    for (std::vector<Value *>::iterator itr = temp.begin(), E = temp.end();
-         itr != E; itr++) {
-      errs() << " " << (*itr)->getName() << "\n";
+    for (const Value *Val : temp) {
+      errs() << " " << Val->getName() << "\n";
       //(*itr)->dump();
     }
   }
@@ -1278,11 +1252,9 @@ void SafepointPlacementImpl::findBasePointers(
 
   if (PrintBasePointers) {
     errs() << "Base Pairs (w/o Relocation):\n";
-    for (std::map<Value *, Value *>::const_iterator I = base_pairs.begin(),
-                                                    E = base_pairs.end();
-         I != E; ++I) {
-      errs() << " derived %" << I->first->getName() << " base %"
-             << I->second->getName() << "\n";
+    for (const std::pair<Value *, Value *> &I : base_pairs) {
+      errs() << " derived %" << I.first->getName() << " base %"
+             << I.second->getName() << "\n";
     }
   }
 
@@ -1340,11 +1312,9 @@ void SafepointPlacementImpl::fixupLiveness(
 
   if (PrintBasePointers) {
     errs() << "Base Pairs: (w/Relocation)\n";
-    for (std::map<Value *, Value *>::const_iterator I = base_pairs.begin(),
-                                                    E = base_pairs.end();
-         I != E; ++I) {
-      errs() << " derived %" << I->first->getName() << " base %"
-             << I->second->getName() << "\n";
+    for (const std::pair<Value *, Value *> &I : base_pairs) {
+      errs() << " derived %" << I.first->getName() << " base %"
+             << I.second->getName() << "\n";
     }
   }
 
@@ -1365,13 +1335,11 @@ void SafepointPlacementImpl::InsertSafepoint(
 
     // Convert to vector for efficient cross referencing.
     std::vector<Value *> basevec, livevec;
-    for (std::set<llvm::Value *>::iterator itr = liveset.begin(),
-                                           E = liveset.end();
-         itr != E; itr++) {
-      livevec.push_back(*itr);
+    for (Value *Live : liveset) {
+      livevec.push_back(Live);
 
-      assert(base_pairs.find(*itr) != base_pairs.end());
-      Value *base = base_pairs[*itr];
+      assert(base_pairs.find(Live) != base_pairs.end());
+      Value *base = base_pairs[Live];
       basevec.push_back(base);
     }
     assert(livevec.size() == basevec.size());
@@ -1429,18 +1397,13 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
 
   // Are there any gc pointer arguments live over this point?  This needs to be
   // special cased since arguments aren't defined in basic blocks.
-  for (Function::arg_iterator argitr = F->arg_begin(), argend = F->arg_end();
-       argitr != argend; argitr++) {
-    Argument &arg = *argitr;
-
+  for (Argument &arg : F->args()) {
     if (!isGCPointerType(arg.getType())) {
       continue;
     }
 
-    for (Value::user_iterator I = arg.user_begin(), E = arg.user_end(); I != E;
-         I++) {
-      Instruction *UserInst = cast<Instruction>(*I);
-      if (isLiveAtSafepoint(term, UserInst, arg, DT, LI)) {
+    for (User *User : arg.users()) {
+      if (isLiveAtSafepoint(term, cast<Instruction>(User), arg, DT, LI)) {
         liveValues.insert(&arg);
         break;
       }
@@ -1451,8 +1414,7 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
   // definitions used in this block - and check to see if any of the values
   // they define are used in locations potentially reachable from the
   // interesting instruction.
-  for (Function::iterator bbi = F->begin(), bbie = F->end(); bbi != bbie;
-       bbi++) {
+  for (Function::iterator bbi : *F) {
     BasicBlock *BBI = bbi;
     if (DT.dominates(BBI, pred)) {
       if (TraceLSP) {
@@ -1465,10 +1427,7 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
       // Walk through the instructions in dominating blocks and keep any
       // that have a use potentially reachable from the block we're
       // considering putting the safepoint in
-      for (BasicBlock::iterator itr = BBI->begin(), end = BBI->end();
-           itr != end; itr++) {
-        Instruction &inst = *itr;
-
+      for (Instruction &inst : *BBI) {
         if (TraceLSP) {
           errs() << "[LSP] Looking at instruction ";
           inst.dump();
@@ -1496,9 +1455,8 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
           continue;
         }
 
-        for (Value::user_iterator I = inst.user_begin(), E = inst.user_end();
-             I != E; I++) {
-          Instruction *UserInst = cast<Instruction>(*I);
+        for (User *User : inst.users()) {
+          Instruction *UserInst = cast<Instruction>(User);
           if (isLiveAtSafepoint(term, UserInst, inst, DT, LI)) {
             if (TraceLSP) {
               errs() << "[LSP] found live use for this safepoint ";
@@ -1660,13 +1618,12 @@ Value *findBaseDefiningValue(Value *I) {
       // we're interested in.
       CallInst *statepoint = cast<CallInst>(II->getArgOperand(0));
       ConstantInt *base_offset = cast<ConstantInt>(II->getArgOperand(1));
-      for (Value::user_iterator I = statepoint->user_begin(),
-                                E = statepoint->user_end();
-           I != E; I++) {
-        IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(*I);
+      for (User *User : statepoint->users()) {
+        IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(User);
         // can be a gc_result use as well, we should ignore that
         if (UserInst && UserInst->getIntrinsicID() == Intrinsic::gc_relocate) {
-          ConstantInt *relocated = cast<ConstantInt>(UserInst->getArgOperand(2));
+          ConstantInt *relocated =
+              cast<ConstantInt>(UserInst->getArgOperand(2));
           if (relocated == base_offset) {
             // Note: use may be II if this was a base relocation.
             return UserInst;
@@ -1776,10 +1733,8 @@ Value *findBaseOrBDV(Value *I, DefiningValueMapTy &cache) {
 }
 
 Value *findRelocateValueAtSP(Instruction *statepoint, Value *def) {
-  for (Value::user_iterator I = statepoint->user_begin(),
-                            E = statepoint->user_end();
-       I != E; I++) {
-    IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(*I);
+  for (User *User : statepoint->users()) {
+    IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(User);
     // can be a gc_result use as well, we should ignore that
     if (UserInst && UserInst->getIntrinsicID() == Intrinsic::gc_relocate) {
       GCRelocateOperands relocate(UserInst);
@@ -1961,16 +1916,13 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
   bool done = false;
   while (!done) {
     done = true;
-    for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                          end = states.end();
-         itr != end; itr++) {
-      Value *v = itr->first;
+    for (const std::pair<Value *, PhiState> &I : states) {
+      Value *v = I.first;
       assert(!isKnownBaseResult(v) && "why did it get added?");
       if (PHINode *phi = dyn_cast<PHINode>(v)) {
-        unsigned NumPHIValues = phi->getNumIncomingValues();
-        assert(NumPHIValues > 0 && "zero input phis are illegal");
-        for (unsigned i = 0; i != NumPHIValues; ++i) {
-          Value *InVal = phi->getIncomingValue(i);
+        assert(phi->getNumIncomingValues() > 0 &&
+               "zero input phis are illegal");
+        for (Value *InVal : phi->operands()) {
           Value *local = findBaseOrBDV(InVal, cache);
           if (!isKnownBaseResult(local) && states.find(local) == states.end()) {
             states[local] = PhiState();
@@ -1994,11 +1946,9 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
 
   if (TraceLSP) {
     errs() << "States after initialization:\n";
-    for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                          end = states.end();
-         itr != end; itr++) {
-      Instruction *v = cast<Instruction>(itr->first);
-      PhiState state = itr->second;
+    for (const std::pair<Value *, PhiState> &I : states) {
+      Instruction *v = cast<Instruction>(I.first);
+      PhiState state = I.second;
       state.dump();
       v->dump();
     }
@@ -2012,20 +1962,17 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
   while (progress) {
     oldSize = states.size();
     progress = false;
-    for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                          end = states.end();
-         itr != end; itr++) {
+    for (const std::pair<Value *, PhiState> &I : states) {
       MeetPhiStates calculateMeet(states);
-      Value *v = itr->first;
+      Value *v = I.first;
       assert(!isKnownBaseResult(v) && "why did it get added?");
       assert(isa<SelectInst>(v) || isa<PHINode>(v));
       if (SelectInst *select = dyn_cast<SelectInst>(v)) {
         calculateMeet.meetWith(findBaseOrBDV(select->getTrueValue(), cache));
         calculateMeet.meetWith(findBaseOrBDV(select->getFalseValue(), cache));
       } else if (PHINode *phi = dyn_cast<PHINode>(v)) {
-        for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
-          calculateMeet.meetWith(
-              findBaseOrBDV(phi->getIncomingValue(i), cache));
+        for (Value *InVal : phi->operands()) {
+          calculateMeet.meetWith(findBaseOrBDV(InVal, cache));
         }
       } else {
         llvm_unreachable("no such state expected");
@@ -2045,22 +1992,18 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
 
   if (TraceLSP) {
     errs() << "States after meet iteration:\n";
-    for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                          end = states.end();
-         itr != end; itr++) {
-      Instruction *v = cast<Instruction>(itr->first);
-      PhiState state = itr->second;
+    for (const std::pair<Value *, PhiState> &I : states) {
+      Instruction *v = cast<Instruction>(I.first);
+      PhiState state = I.second;
       state.dump();
       v->dump();
     }
   }
 
   // Insert Phis for all conflicts
-  for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                        end = states.end();
-       itr != end; itr++) {
-    Instruction *v = cast<Instruction>(itr->first);
-    PhiState state = itr->second;
+  for (const std::pair<Value *, PhiState> &I : states) {
+    Instruction *v = cast<Instruction>(I.first);
+    PhiState state = I.second;
     assert(!isKnownBaseResult(v) && "why did it get added?");
     assert(!state.isUnknown() && "Optimistic algorithm didn't complete!");
     if (state.isConflict()) {
@@ -2101,11 +2044,9 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
   }
 
   // Fixup all the inputs of the new PHIs
-  for (map<Value *, PhiState>::iterator itr = states.begin(),
-                                        end = states.end();
-       itr != end; itr++) {
-    Instruction *v = cast<Instruction>(itr->first);
-    PhiState state = itr->second;
+  for (const std::pair<Value *, PhiState> &I : states) {
+    Instruction *v = cast<Instruction>(I.first);
+    PhiState state = I.second;
 
     assert(!isKnownBaseResult(v) && "why did it get added?");
     assert(!state.isUnknown() && "Optimistic algorithm didn't complete!");
@@ -2167,7 +2108,7 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
   // Cache all of our results so we can cheaply reuse them
   // NOTE: This is actually two caches: one of the base defining value
   // relation and one of the base pointer relation!  FIXME
-  for (auto item : states) {
+  for (const auto &item : states) {
     Value *v = item.first;
     Value *base = item.second.getBase();
     assert(v && base);
@@ -2539,9 +2480,7 @@ void SafepointPlacementImpl::CreateSafepoint(
 
 namespace {
 bool atLeastOnePhiInBB(const set<PHINode *> &phis, const BasicBlock *BB) {
-  for (set<PHINode *>::iterator itr = phis.begin(), end = phis.end();
-       itr != end; itr++) {
-    PHINode *Phi = *itr;
+  for (PHINode *Phi : phis) {
     if (Phi->getParent() == BB) {
       return true;
     }
@@ -2552,10 +2491,7 @@ bool atLeastOnePhiInBB(const set<PHINode *> &phis, const BasicBlock *BB) {
 void updatePHIUses(DominatorTree &DT, Value *oldDef,
                    std::map<BasicBlock *, Value *> &seen,
                    set<PHINode *> &newPHIs, bool isNewPhi) {
-  for (std::set<PHINode *>::iterator itr = newPHIs.begin(), end = newPHIs.end();
-       itr != end; itr++) {
-    PHINode *phi = *itr;
-
+  for (PHINode *phi : newPHIs) {
     BasicBlock *BB = phi->getParent();
     if (!isNewPhi) {
       unsigned NumPHIValues = phi->getNumIncomingValues();
@@ -2656,10 +2592,9 @@ void SafepointPlacementImpl::relocationViaAlloca(
   int initialAllocaNum = 0;
 
   // record initial number of allocas
-  for (Function::const_iterator I = F.begin(), E = F.end(); I != E; I++) {
-    for (BasicBlock::const_iterator II = (*I).begin(), EE = (*I).end();
-         II != EE; II++) {
-      if (isa<AllocaInst>(*II))
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &Inst : BB) {
+      if (isa<AllocaInst>(Inst))
         initialAllocaNum++;
     }
   }
@@ -2669,8 +2604,7 @@ void SafepointPlacementImpl::relocationViaAlloca(
   std::vector<AllocaInst *> PromotableAllocas;
 
   // emit alloca for each live gc pointer
-  for (unsigned i = 0; i < live.size(); i++) {
-    Value *liveValue = live[i];
+  for (Value *liveValue : live) {
     AllocaInst *alloca = new AllocaInst(liveValue->getType(), "",
                                         F.getEntryBlock().getFirstNonPHI());
     allocaMap[liveValue] = alloca;
@@ -2678,19 +2612,16 @@ void SafepointPlacementImpl::relocationViaAlloca(
   }
 
   // update use with load allocas and add store for gc_relocated
-  for (std::map<Value *, Value *>::const_iterator I = allocaMap.begin(),
-                                                  E = allocaMap.end();
-       I != E; ++I) {
-    Value *def = I->first;
-    Value *alloca = I->second;
+  for (const std::pair<Value *, Value *> &I : allocaMap) {
+    Value *def = I.first;
+    Value *alloca = I.second;
 
     // update gc pointer after each statepoint
     // either store a relocated value or null (if no relocated value found for
     // this gc pointer and it is not a gc_result)
     // this must happen before we update the statepoint with load of alloca
     // otherwise we lose the link between statepoint and old def
-    for (size_t i = 0; i < records.size(); i++) {
-      const struct PartiallyConstructedSafepointRecord &info = records[i];
+    for (const struct PartiallyConstructedSafepointRecord &info : records) {
       Value *relocatedValue = findRelocateValueAtSP(info.safepoint.first, def);
       if (relocatedValue != NULL) {
         StoreInst *store = new StoreInst(relocatedValue, alloca);
@@ -2708,17 +2639,13 @@ void SafepointPlacementImpl::relocationViaAlloca(
     // that change the user information.
     std::vector<Instruction *> users;
 
-    for (Value::user_iterator userIterator = def->user_begin(),
-                              userEnd = def->user_end();
-         userIterator != userEnd; ++userIterator) {
-      users.push_back(dyn_cast<Instruction>(*userIterator));
+    for (User *User : def->users()) {
+      users.push_back(dyn_cast<Instruction>(User));
     }
 
     unique_unsorted(users);
 
-    for (std::vector<Instruction *>::iterator userIterator = users.begin();
-         userIterator != users.end(); ++userIterator) {
-      Instruction *User = *userIterator;
+    for (Instruction *User : users) {
       if (isa<PHINode>(User)) {
         PHINode *phi = cast<PHINode>(User);
         for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
@@ -2755,10 +2682,9 @@ void SafepointPlacementImpl::relocationViaAlloca(
   }
 
 #ifndef NDEBUG
-  for (Function::const_iterator I = F.begin(), E = F.end(); I != E; I++) {
-    for (BasicBlock::const_iterator II = (*I).begin(), EE = (*I).end();
-         II != EE; II++) {
-      if (isa<AllocaInst>(*II))
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &Inst : BB) {
+      if (isa<AllocaInst>(Inst))
         initialAllocaNum--;
     }
   }
@@ -2794,10 +2720,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
   // the input edges will never be explored).  This allows us to terminate the
   // search when leaving the region dominated by oldDef without worrying about
   // phis in the blocks reachable immediately outside that region.
-  for (Value::user_iterator I = oldDef->user_begin(), E = oldDef->user_end();
-       I != E; I++) {
-    Instruction *UserInst = cast<Instruction>(*I);
-    if (PHINode *phi = dyn_cast<PHINode>(UserInst)) {
+  for (User *User : oldDef->users()) {
+    if (PHINode *phi = dyn_cast<PHINode>(User)) {
       phis.insert(phi);
     }
   }
@@ -2878,10 +2802,9 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
                                 end = currentBB->getFirstNonPHI();
            itr != end; itr++) {
         PHINode *phi = cast<PHINode>(&*itr);
-        const unsigned NumPHIValues = phi->getNumIncomingValues();
-        assert(NumPHIValues > 0 && "zero input phis are illegal");
-        for (unsigned i = 0; i != NumPHIValues; ++i) {
-          Value *InVal = phi->getIncomingValue(i);
+        assert(phi->getNumIncomingValues() > 0 &&
+               "zero input phis are illegal");
+        for (Value *InVal : phi->operands()) {
           if (InVal == oldDef) {
             if (phi->getMetadata("is_relocation_phi")) {
               // We've already seen this block, how'd we reach it again?
@@ -2894,7 +2817,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
                    "must already be a use of oldDef");
 
             break;
-          } // for NumPHIValues
+          }
         }
       }
 
@@ -2938,10 +2861,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
       if (exitDef) {
         inst->replaceUsesOfWith(oldDef, exitDef);
       } else {
-        for (Value::user_iterator I = oldDef->user_begin(),
-                                  E = oldDef->user_end();
-             I != E; I++) {
-          Instruction *UserInst = cast<Instruction>(*I);
+        for (User *User : oldDef->users()) {
+          Instruction *UserInst = cast<Instruction>(User);
           assert(UserInst != inst && "encountered a use without a valid def!");
         }
       }
@@ -2987,10 +2908,9 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
 
   if (TraceLSP) {
     errs() << "[TraceRelocations] map<BasicBlock *, Instruction *> seen == \n";
-    for (map<BasicBlock *, Value *>::iterator I = seen.begin(), E = seen.end();
-         I != E; ++I) {
-      errs() << "\tseen[%" << I->first->getName() << "] = %"
-             << (I->second ? I->second->getName() : "NULL") << "\n";
+    for (const std::pair<BasicBlock *, Value *> &I : seen) {
+      errs() << "\tseen[%" << I.first->getName() << "] = %"
+             << (I.second ? I.second->getName() : "NULL") << "\n";
     }
   }
 

@@ -80,10 +80,9 @@ void add_transative_closure(Value *gcptr, std::set<Value *> &invalid) {
 
   // Second, walk through all of our uses looking for things which should
   // have been invalidated as well.
-  for (Value::user_iterator I = gcptr->user_begin(), E = gcptr->user_end();
-       I != E; I++) {
-    if (isa<CastInst>(*I) || isa<GetElementPtrInst>(*I)) {
-      add_transative_closure(*I, invalid);
+  for (Value *User : gcptr->users()) {
+    if (isa<CastInst>(User) || isa<GetElementPtrInst>(User)) {
+      add_transative_closure(User, invalid);
     }
   }
 }
@@ -97,9 +96,7 @@ void add_dominating_defs(Instruction *term, std::set<Value *> &invalid,
   assert(!isa<PHINode>(term) &&
          "term shoud be a safepoint and can not be a phi node");
   Function *F = term->getParent()->getParent();
-  for (Function::arg_iterator argitr = F->arg_begin(), argend = F->arg_end();
-       argitr != argend; argitr++) {
-    Argument &arg = *argitr;
+  for (Argument &arg : F->args()) {
     if (isGCPointerType(arg.getType())) {
       add_transative_closure(&arg, invalid);
     }
@@ -111,10 +108,7 @@ void add_dominating_defs(Instruction *term, std::set<Value *> &invalid,
     BasicBlock *BBI = currentNode->getBlock();
     assert(isPotentiallyReachable(BBI, pred) &&
            "dominated block must be reachable");
-    for (BasicBlock::iterator itr = BBI->begin(), end = BBI->end(); itr != end;
-         itr++) {
-      Instruction &inst = *itr;
-
+    for (Instruction &inst : *BBI) {
       if (pred == BBI && (&inst) == term) {
         break;
       }
@@ -153,9 +147,8 @@ static bool RelocationPHIEscapes(PHINode *node) {
     if (!node->getMetadata("is_relocation_phi"))
       return true;
 
-    for (Value::user_iterator I = node->user_begin(), E = node->user_end();
-         I != E; ++I) {
-      if (PHINode *node = dyn_cast<PHINode>(*I)) {
+    for (Value *User : node->users()) {
+      if (PHINode *node = dyn_cast<PHINode>(User)) {
         if (explored.count(node) == 0)
           worklist.push_back(node);
       } else {
@@ -241,9 +234,8 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     // If we encounter a def via a backedge, remove it from the set of
     // invalid uses - in this case, all phi defs are valid, no matter what cam
     // in through the merge set
-    for (set<Value *>::iterator itr = nowvalid.begin(), end = nowvalid.end();
-         itr != end; itr++) {
-      set<Value *>::iterator invalid_itr = invalid.find(*itr);
+    for (Value *Val : nowvalid) {
+      set<Value *>::iterator invalid_itr = invalid.find(Val);
       if (invalid_itr != invalid.end()) {
         invalid.erase(invalid_itr);
       }
@@ -257,8 +249,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
       Instruction *inst = &*itr;
 
       // Check all the uses
-      for (size_t i = 0; i < inst->getNumOperands(); i++) {
-        Value *op = inst->getOperand(i);
+      for (Value *op : inst->operands()) {
         if (invalid.find(op) != invalid.end()) {
           errs() << "Illegal use of unrelocated value after safepoint found!\n";
           errs() << "Def: ";

@@ -43,12 +43,8 @@ private:
     }
     invalid.insert(reg);
 
-    for (MachineRegisterInfo::use_iterator I = MRI->use_begin(reg),
-                                           E = MRI->use_end();
-         I != E; I++) {
-
-      MachineOperand &Use = *I;
-      MachineInstr *UseMI = Use.getParent();
+    for (const MachineOperand &Use : MRI->use_operands(reg)) {
+      const MachineInstr *UseMI = Use.getParent();
       if (UseMI->isCopy()) {
         assert(UseMI->getOperand(0).isReg() && UseMI->getOperand(1).isReg() &&
                "copy must be between two registers");
@@ -117,13 +113,10 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
   // them first. As spills dominate statepoint, we should not miss any
   // statepoint. Statepoints those have no spills
   // must be reachable from a statepoint which has spills.
-  for (MachineFunction::iterator I = MF.begin(), E = MF.end(); I != E; I++) {
-    MachineBasicBlock *MBB = &*I;
-    for (MachineBasicBlock::iterator MII = MBB->begin(), MIE = MBB->end();
-         MII != MIE; MII++) {
-      MachineInstr *MI = &*MII;
-      if (MI->mayStore()) {
-        worklist.push_back(MBB);
+  for (MachineBasicBlock &MBB : MF) {
+    for (const MachineInstr &MI : MBB) {
+      if (MI.mayStore()) {
+        worklist.push_back(&MBB);
         break;
       }
     }
@@ -164,19 +157,14 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
     std::set<unsigned> invalid;
     // join all incoming invalid list from its predecessors
-    for (MachineBasicBlock::pred_iterator PI = currentBlock->pred_begin(),
-                                          E = currentBlock->pred_end();
-         PI != E; ++PI) {
-      MachineBasicBlock *Pred = *PI;
+    for (MachineBasicBlock *Pred : currentBlock->predecessors()) {
       bb_exit_state exit = state[Pred];
       invalid.insert(exit._invalid.begin(), exit._invalid.end());
     }
 
     // if an invalid value reaches its def, it should be removed from the list
-    for (std::set<unsigned>::iterator itr = validByDef.begin(),
-                                      end = validByDef.end();
-         itr != end; itr++) {
-      std::set<unsigned>::iterator invalid_itr = invalid.find(*itr);
+    for (unsigned val : validByDef) {
+      std::set<unsigned>::iterator invalid_itr = invalid.find(val);
       if (invalid_itr != invalid.end()) {
         invalid.erase(invalid_itr);
       }
@@ -190,10 +178,10 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
       if (inst->getNumOperands() > 0) {
         // first remove new def from the invalid list
-        for (unsigned i = 0; i < inst->getNumOperands(); i++) {
-          if (inst->getOperand(i).isReg() && inst->getOperand(i).isDef() &&
-              invalid.find(inst->getOperand(i).getReg()) != invalid.end()) {
-            invalid.erase(invalid.find(inst->getOperand(i).getReg()));
+        for (const MachineOperand &Operand : inst->operands()) {
+          if (Operand.isReg() && Operand.isDef() &&
+              invalid.find(Operand.getReg()) != invalid.end()) {
+            invalid.erase(invalid.find(Operand.getReg()));
           }
         }
 
@@ -250,10 +238,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
       if (state[currentBlock]._invalid != invalid) {
         state[currentBlock]._invalid = invalid;
-        for (MachineBasicBlock::succ_iterator PI = currentBlock->succ_begin(),
-                                              E = currentBlock->succ_end();
-             PI != E; ++PI) {
-          MachineBasicBlock *Succ = *PI;
+        for (MachineBasicBlock *Succ : currentBlock->successors()) {
           worklist.push_back(Succ);
         }
       }
