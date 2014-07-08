@@ -228,9 +228,9 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
       // Remove the use holding this call in place
       assert(std::distance(CI->user_begin(), CI->user_end()) == 1 &&
              "must have exactly one use");
-      StoreInst *use = cast<StoreInst>(*CI->user_begin());
-      assert(isJVMStateAnchorInstruction(use));
-      use->eraseFromParent();
+      StoreInst *User = cast<StoreInst>(*CI->user_begin());
+      assert(isJVMStateAnchorInstruction(User));
+      User->eraseFromParent();
       assert(std::distance(CI->user_begin(), CI->user_end()) == 0 &&
              "should be no uses left");
 
@@ -1326,12 +1326,12 @@ void SafepointPlacementImpl::fixupLiveness(
 
     // PERF: This loop could be easily optimized even without moving to a true
     // liveness analysis.  Simply grouping uses by basic block would help a lot.
-    for (User *user : newDef->users()) {
-      Instruction *use = cast<Instruction>(user);
+    for (User *User : newDef->users()) {
+      Instruction *UserInst = cast<Instruction>(User);
       // Record new defs those are dominating and live at the safepoint (we
       // need to make sure def dominates safepoint since our liveness analysis
       // has this assumption)
-      if (isLiveAtSafepoint(inst, use, *newDef, DT, NULL)) {
+      if (isLiveAtSafepoint(inst, UserInst, *newDef, DT, NULL)) {
         // Add the live new defs into liveset and base_pairs
         liveset.insert(newDef);
         base_pairs[newDef] = newDef;
@@ -1441,8 +1441,8 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
 
     for (Value::user_iterator I = arg.user_begin(), E = arg.user_end(); I != E;
          I++) {
-      Instruction *use = cast<Instruction>(*I);
-      if (isLiveAtSafepoint(term, use, arg, DT, LI)) {
+      Instruction *UserInst = cast<Instruction>(*I);
+      if (isLiveAtSafepoint(term, UserInst, arg, DT, LI)) {
         liveValues.insert(&arg);
         break;
       }
@@ -1500,18 +1500,18 @@ void SafepointPlacementImpl::findLiveGCValuesAtInst(
 
         for (Value::user_iterator I = inst.user_begin(), E = inst.user_end();
              I != E; I++) {
-          Instruction *use = cast<Instruction>(*I);
-          if (isLiveAtSafepoint(term, use, inst, DT, LI)) {
+          Instruction *UserInst = cast<Instruction>(*I);
+          if (isLiveAtSafepoint(term, UserInst, inst, DT, LI)) {
             if (TraceLSP) {
               errs() << "[LSP] found live use for this safepoint ";
-              use->dump();
+              UserInst->dump();
             }
             liveValues.insert(&inst);
             break;
           } else {
             if (TraceLSP) {
               errs() << "[LSP] this use does not satisfy isLiveAtSafepoint ";
-              use->dump();
+              UserInst->dump();
             }
           }
         }
@@ -1665,13 +1665,13 @@ Value *findBaseDefiningValue(Value *I) {
       for (Value::user_iterator I = statepoint->user_begin(),
                                 E = statepoint->user_end();
            I != E; I++) {
-        IntrinsicInst *use = dyn_cast<IntrinsicInst>(*I);
+        IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(*I);
         // can be a gc_result use as well, we should ignore that
-        if (use && use->getIntrinsicID() == Intrinsic::gc_relocate) {
-          ConstantInt *relocated = cast<ConstantInt>(use->getArgOperand(2));
+        if (UserInst && UserInst->getIntrinsicID() == Intrinsic::gc_relocate) {
+          ConstantInt *relocated = cast<ConstantInt>(UserInst->getArgOperand(2));
           if (relocated == base_offset) {
             // Note: use may be II if this was a base relocation.
-            return use;
+            return UserInst;
           }
         }
       }
@@ -1781,12 +1781,12 @@ Value *findRelocateValueAtSP(Instruction *statepoint, Value *def) {
   for (Value::user_iterator I = statepoint->user_begin(),
                             E = statepoint->user_end();
        I != E; I++) {
-    IntrinsicInst *use = dyn_cast<IntrinsicInst>(*I);
+    IntrinsicInst *UserInst = dyn_cast<IntrinsicInst>(*I);
     // can be a gc_result use as well, we should ignore that
-    if (use && use->getIntrinsicID() == Intrinsic::gc_relocate) {
-      GCRelocateOperands relocate(use);
+    if (UserInst && UserInst->getIntrinsicID() == Intrinsic::gc_relocate) {
+      GCRelocateOperands relocate(UserInst);
       if (def == relocate.derivedPtr()) {
-        return use;
+        return UserInst;
       }
     }
   }
@@ -2546,8 +2546,8 @@ namespace {
 bool atLeastOnePhiInBB(const set<PHINode *> &phis, const BasicBlock *BB) {
   for (set<PHINode *>::iterator itr = phis.begin(), end = phis.end();
        itr != end; itr++) {
-    PHINode *use = *itr;
-    if (use->getParent() == BB) {
+    PHINode *Phi = *itr;
+    if (Phi->getParent() == BB) {
       return true;
     }
   }
@@ -2711,21 +2711,21 @@ void SafepointPlacementImpl::relocationViaAlloca(
     // we pre-record the uses of allocas so that we dont have to worry about
     // later update
     // that change the user information.
-    std::vector<Instruction *> uses;
+    std::vector<Instruction *> users;
 
     for (Value::user_iterator userIterator = def->user_begin(),
                               userEnd = def->user_end();
          userIterator != userEnd; ++userIterator) {
-      uses.push_back(dyn_cast<Instruction>(*userIterator));
+      users.push_back(dyn_cast<Instruction>(*userIterator));
     }
 
-    unique_unsorted(uses);
+    unique_unsorted(users);
 
-    for (std::vector<Instruction *>::iterator useIterator = uses.begin();
-         useIterator != uses.end(); ++useIterator) {
-      Instruction *use = *useIterator;
-      if (isa<PHINode>(use)) {
-        PHINode *phi = cast<PHINode>(use);
+    for (std::vector<Instruction *>::iterator userIterator = users.begin();
+         userIterator != users.end(); ++userIterator) {
+      Instruction *User = *userIterator;
+      if (isa<PHINode>(User)) {
+        PHINode *phi = cast<PHINode>(User);
         for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
           if (def == phi->getIncomingValue(i)) {
             LoadInst *load = new LoadInst(
@@ -2734,8 +2734,8 @@ void SafepointPlacementImpl::relocationViaAlloca(
           }
         }
       } else {
-        LoadInst *load = new LoadInst(alloca, "", use);
-        use->replaceUsesOfWith(def, load);
+        LoadInst *load = new LoadInst(alloca, "", User);
+        User->replaceUsesOfWith(def, load);
       }
     }
 
@@ -2801,8 +2801,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
   // phis in the blocks reachable immediately outside that region.
   for (Value::user_iterator I = oldDef->user_begin(), E = oldDef->user_end();
        I != E; I++) {
-    Instruction *use = cast<Instruction>(*I);
-    if (PHINode *phi = dyn_cast<PHINode>(use)) {
+    Instruction *UserInst = cast<Instruction>(*I);
+    if (PHINode *phi = dyn_cast<PHINode>(UserInst)) {
       phis.insert(phi);
     }
   }
@@ -2946,8 +2946,8 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
         for (Value::user_iterator I = oldDef->user_begin(),
                                   E = oldDef->user_end();
              I != E; I++) {
-          Instruction *use = cast<Instruction>(*I);
-          assert(use != inst && "encountered a use without a valid def!");
+          Instruction *UserInst = cast<Instruction>(*I);
+          assert(UserInst != inst && "encountered a use without a valid def!");
         }
       }
 
