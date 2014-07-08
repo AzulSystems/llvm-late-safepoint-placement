@@ -26,7 +26,6 @@
 #include "llvm/IR/SafepointIRVerifier.h"
 
 using namespace llvm;
-using namespace std;
 
 cl::opt<bool> AllowNonEscapingUnrelocatedValues(
     "spp-verifier-allow-non-escaping-unrelocated-values", cl::init(false));
@@ -128,7 +127,7 @@ void add_dominating_defs(Instruction *term, std::set<Value *> &invalid,
 }
 
 struct bb_exit_state {
-  set<Value *> _invalid;
+  std::set<Value *> _invalid;
 };
 }
 
@@ -136,8 +135,8 @@ static bool RelocationPHIEscapes(PHINode *node) {
   if (!AllowNonEscapingUnrelocatedValues) {
     return true;
   }
-  set<PHINode *> explored;
-  vector<PHINode *> worklist;
+  std::set<PHINode *> explored;
+  std::vector<PHINode *> worklist;
   worklist.push_back(node);
 
   while (!worklist.empty()) {
@@ -192,7 +191,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     BasicBlock *current = worklist.back();
     worklist.pop_back();
 
-    set<Value *> nowvalid;
+    std::set<Value *> nowvalid;
     // First, handle all the PHINodes in a path sensative manner
     for (BasicBlock::iterator itr = current->begin(),
                               end = current->getFirstNonPHI();
@@ -235,7 +234,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     // invalid uses - in this case, all phi defs are valid, no matter what cam
     // in through the merge set
     for (Value *Val : nowvalid) {
-      set<Value *>::iterator invalid_itr = invalid.find(Val);
+      std::set<Value *>::iterator invalid_itr = invalid.find(Val);
       if (invalid_itr != invalid.end()) {
         invalid.erase(invalid_itr);
       }

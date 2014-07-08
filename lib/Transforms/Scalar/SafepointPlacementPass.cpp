@@ -65,7 +65,6 @@
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
 using namespace llvm;
-using namespace std;
 
 // Set this debugging variable to 1 to have the IR verified for consistency
 // after every transform is complete.
@@ -1186,7 +1185,7 @@ void stablize_order(std::vector<Value *> &basevec,
                     std::vector<Value *> &livevec) {
   assert(basevec.size() == livevec.size());
 
-  vector<name_ordering> temp;
+  std::vector<name_ordering> temp;
   for (size_t i = 0; i < basevec.size(); i++) {
     name_ordering v;
     v.base = basevec[i];
@@ -1842,7 +1841,7 @@ private:
   }
 
   PhiState lookupFromMap(Value *V) {
-    map<Value *, PhiState>::const_iterator I = phiStates.find(V);
+    std::map<Value *, PhiState>::const_iterator I = phiStates.find(V);
     assert(I != phiStates.end() && "lookup failed!");
     return I->second;
   }
@@ -1908,7 +1907,7 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
      overall worse solution.
   */
 
-  map<Value *, PhiState> states;
+  std::map<Value *, PhiState> states;
   states[def] = PhiState();
   // Recursively fill in all phis & selects reachable from the initial one
   // for which we don't already know a definite base value for
@@ -2115,9 +2114,9 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
     assert(!isKnownBaseResult(v) && "why did it get added?");
 
     if (TraceLSP) {
-      string fromstr = cache.count(v)
-                           ? (cache[v]->hasName() ? cache[v]->getName() : "")
-                           : "none";
+      std::string fromstr =
+          cache.count(v) ? (cache[v]->hasName() ? cache[v]->getName() : "")
+                         : "none";
       errs() << "Updating base value cache"
              << " for: " << (v->hasName() ? v->getName() : "")
              << " from: " << fromstr
@@ -2397,7 +2396,7 @@ void SafepointPlacementImpl::CreateSafepoint(
   // Only add the gc_result iff there is actually a used result
   Instruction *gc_result = nullptr;
   if (!CS.getType()->isVoidTy() && !CS.getInstruction()->use_empty()) {
-    vector<Type *> types;          // one per 'any' type
+    std::vector<Type *> types;     // one per 'any' type
     types.push_back(CS.getType()); // result type
     Value *gc_result_func = nullptr;
     if (CS.getType()->isIntegerTy()) {
@@ -2413,7 +2412,7 @@ void SafepointPlacementImpl::CreateSafepoint(
       llvm_unreachable("non java type encountered");
     }
 
-    vector<Value *> args;
+    std::vector<Value *> args;
     args.push_back(token);
     gc_result = Builder.CreateCall(
         gc_result_func, args,
@@ -2428,13 +2427,13 @@ void SafepointPlacementImpl::CreateSafepoint(
     // combination.  This results is some blow up the function declarations in
     // the IR, but removes the need for argument bitcasts which shrinks the IR
     // greatly and makes it much more readable.
-    vector<Type *> types;                         // one per 'any' type
+    std::vector<Type *> types;                    // one per 'any' type
     types.push_back(liveVariables[i]->getType()); // result type
     Value *gc_relocate_decl =
         Intrinsic::getDeclaration(M, Intrinsic::gc_relocate, types);
 
     // Generate the gc.relocate call and save the result
-    vector<Value *> args;
+    std::vector<Value *> args;
     args.push_back(token);
     args.push_back(
         ConstantInt::get(Type::getInt32Ty(M->getContext()),
@@ -2470,7 +2469,8 @@ void SafepointPlacementImpl::CreateSafepoint(
     last = token;
   }
   assert(last && "can't be null");
-  const std::pair<Instruction *, Instruction *> bounds = make_pair(token, last);
+  const std::pair<Instruction *, Instruction *> bounds =
+      std::make_pair(token, last);
 
   // Sanity check our results - this is slightly non-trivial due to invokes
   VerifySafepointBounds(bounds);
@@ -2479,7 +2479,7 @@ void SafepointPlacementImpl::CreateSafepoint(
 }
 
 namespace {
-bool atLeastOnePhiInBB(const set<PHINode *> &phis, const BasicBlock *BB) {
+bool atLeastOnePhiInBB(const std::set<PHINode *> &phis, const BasicBlock *BB) {
   for (PHINode *Phi : phis) {
     if (Phi->getParent() == BB) {
       return true;
@@ -2490,7 +2490,7 @@ bool atLeastOnePhiInBB(const set<PHINode *> &phis, const BasicBlock *BB) {
 
 void updatePHIUses(DominatorTree &DT, Value *oldDef,
                    std::map<BasicBlock *, Value *> &seen,
-                   set<PHINode *> &newPHIs, bool isNewPhi) {
+                   std::set<PHINode *> &newPHIs, bool isNewPhi) {
   for (PHINode *phi : newPHIs) {
     BasicBlock *BB = phi->getParent();
     if (!isNewPhi) {
@@ -2728,10 +2728,10 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
 
   if (isa<Argument>(oldDef)) {
     // Push the entry block (where the argument is valid on entry)
-    frontier.push_back(make_pair(&F.getEntryBlock(), oldDef));
+    frontier.push_back(std::make_pair(&F.getEntryBlock(), oldDef));
   } else {
     // Push the entry block (which has no valid def for old def)
-    frontier.push_back(make_pair(&F.getEntryBlock(), (Value *)nullptr));
+    frontier.push_back(std::make_pair(&F.getEntryBlock(), (Value *)nullptr));
   }
   while (!frontier.empty()) {
     const frontier_node current = frontier.back();
@@ -2902,7 +2902,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
         continue;
       }
       // The exiting def of this block is the entry def of the successors
-      frontier.push_back(make_pair(Succ, exitDef));
+      frontier.push_back(std::make_pair(Succ, exitDef));
     }
   }
 

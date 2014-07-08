@@ -7,7 +7,6 @@
 
 #include "llvm/IR/Statepoint.h"
 
-using namespace std;
 using namespace llvm;
 
 bool llvm::isStatepoint(const ImmutableCallSite &CS) {
