@@ -163,9 +163,9 @@ struct PlaceBackedgeSafepointsImpl : public LoopPass {
     initializePlaceBackedgeSafepointsImplPass(*PassRegistry::getPassRegistry());
   }
 
-  virtual bool runOnLoop(Loop *, LPPassManager &LPM);
+  bool runOnLoop(Loop *, LPPassManager &LPM) override;
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     // needed for determining if the loop is finite
     AU.addRequired<ScalarEvolution>();
     // to ensure each edge has a single backedge
@@ -196,7 +196,7 @@ struct PlaceSafepoints : public ModulePass {
     EnableBackedgeSafepoints = !NoBackedge;
     EnableCallSafepoints = !NoCall;
   }
-  virtual bool runOnModule(Module &M) {
+  bool runOnModule(Module &M) override {
     bool modified = false;
     for( Module::iterator itr = M.begin(), end = M.end();
          itr != end; itr++) {
@@ -207,7 +207,7 @@ struct PlaceSafepoints : public ModulePass {
   }
   bool runOnFunction(Function& F);
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     // We modify the graph wholesale (inlining, block insertion, etc).  We
     // preserve nothing at the moment.  We could potentially preserve dom tree
     // if that was worth doing
@@ -219,7 +219,7 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
   RemoveFakeVMStateCalls() : FunctionPass(ID) {
     initializeRemoveFakeVMStateCallsPass(*PassRegistry::getPassRegistry());
   }
-  virtual bool runOnFunction(Function &F) {
+  bool runOnFunction(Function &F) override {
     // Track the calls and function definitions to be removed
     std::vector<CallInst*> instToRemove;
     std::set<Function*> funcToRemove;
@@ -262,7 +262,7 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
     return true;
   }
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
   }
 };
