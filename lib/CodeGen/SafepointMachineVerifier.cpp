@@ -19,7 +19,7 @@ using namespace llvm;
 
 namespace {
 class SafepointMachineVerifier : public MachineFunctionPass {
-  virtual bool runOnMachineFunction(MachineFunction &MF);
+  bool runOnMachineFunction(MachineFunction &MF) override;
 
   const MachineRegisterInfo *MRI;
   const TargetInstrInfo *TII;
@@ -30,7 +30,7 @@ public:
     initializeSafepointMachineVerifierPass(*PassRegistry::getPassRegistry());
   }
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MachineDominatorTree>();
     AU.addPreserved<MachineDominatorTree>();
     MachineFunctionPass::getAnalysisUsage(AU);
