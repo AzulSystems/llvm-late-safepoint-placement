@@ -226,13 +226,11 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
       CallInst *CI = instToRemove[i];
 
       // Remove the use holding this call in place
-      assert(std::distance(CI->user_begin(), CI->user_end()) == 1 &&
-             "must have exactly one use");
+      assert(CI->hasOneUse() && "must have exactly one use");
       StoreInst *User = cast<StoreInst>(*CI->user_begin());
       assert(isJVMStateAnchorInstruction(User));
       User->eraseFromParent();
-      assert(std::distance(CI->user_begin(), CI->user_end()) == 0 &&
-             "should be no uses left");
+      assert(CI->use_empty() && "should be no uses left");
 
       // Remove the call itself
       CI->eraseFromParent();
