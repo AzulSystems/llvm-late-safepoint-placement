@@ -128,7 +128,12 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
     MachineBasicBlock *currentBlock = worklist.back();
     worklist.pop_back();
 
-    std::set<unsigned> validByDef;
+    std::set<unsigned> invalid;
+    // join all incoming invalid list from its predecessors
+    for (MachineBasicBlock *Pred : currentBlock->predecessors()) {
+      bb_exit_state exit = state[Pred];
+      invalid.insert(exit._invalid.begin(), exit._invalid.end());
+    }
 
     for (MachineBasicBlock::iterator itr = currentBlock->begin(),
                                      end = currentBlock->getFirstNonPHI();
@@ -152,19 +157,8 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
         }
       }
       assert(inst->getOperand(0).isReg() && "phi shuold be assigned to a reg");
-      validByDef.insert(inst->getOperand(0).getReg());
-    }
-
-    std::set<unsigned> invalid;
-    // join all incoming invalid list from its predecessors
-    for (MachineBasicBlock *Pred : currentBlock->predecessors()) {
-      bb_exit_state exit = state[Pred];
-      invalid.insert(exit._invalid.begin(), exit._invalid.end());
-    }
-
-    // if an invalid value reaches its def, it should be removed from the list
-    for (unsigned val : validByDef) {
-      invalid.erase(val);
+      // if an invalid value reaches its def, it should be removed from the list
+      invalid.erase(inst->getOperand(0).getReg());
     }
 
     // now scan the rest of the machine instruction in the block
