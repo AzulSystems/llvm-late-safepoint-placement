@@ -66,30 +66,35 @@
 
 using namespace llvm;
 
-// Set this debugging variable to 1 to have the IR verified for consistency
-// after every transform is complete.
-cl::opt<bool> VerifyAllIR("spp-verify-all-ir", cl::init(true));
+// Verify the IR for consistency after every transform is complete
+static cl::opt<bool> VerifyAllIR("spp-verify-all-ir", cl::init(true));
 
 // Ignore oppurtunities to avoid placing safepoints on backedges, useful for
 // validation
-cl::opt<bool> AllBackedges("spp-all-backedges", cl::init(false));
+static cl::opt<bool> AllBackedges("spp-all-backedges", cl::init(false));
 // Only go as far as confirming base pointers exist, useful for fault isolation
-cl::opt<bool> BaseRewriteOnly("spp-base-rewrite-only", cl::init(false));
+static cl::opt<bool> BaseRewriteOnly("spp-base-rewrite-only", cl::init(false));
 // Add safepoints to all functions, not just the ones with attributes
 extern cl::opt<bool> AllFunctions;
 // Include deopt state in safepoints?
-cl::opt<bool> UseVMState("spp-use-vm-state", cl::init(true));
+static cl::opt<bool> UseVMState("spp-use-vm-state", cl::init(true));
 
 // Print tracing output
-cl::opt<bool> TraceLSP("spp-trace", cl::init(false));
+static cl::opt<bool> TraceLSP("spp-trace", cl::init(false));
 
 // Print the liveset found at the insert location
-cl::opt<bool> PrintLiveSet("spp-print-liveset", cl::init(false));
-cl::opt<bool> PrintLiveSetSize("spp-print-liveset-size", cl::init(false));
+static cl::opt<bool> PrintLiveSet("spp-print-liveset", cl::init(false));
+static cl::opt<bool> PrintLiveSetSize("spp-print-liveset-size",
+                                      cl::init(false));
 // Print out the base pointers for debugging
-cl::opt<bool> PrintBasePointers("spp-print-base-pointers", cl::init(false));
+static cl::opt<bool> PrintBasePointers("spp-print-base-pointers",
+                                       cl::init(false));
 // Use alloca to emit relocation phis
-cl::opt<bool> RelocViaAlloc("spp-reloc-via-alloca", cl::init(false));
+static cl::opt<bool> RelocViaAlloc("spp-reloc-via-alloca", cl::init(false));
+
+static cl::opt<bool> NoEntry("spp-no-entry", cl::init(false));
+static cl::opt<bool> NoCall("spp-no-call", cl::init(false));
+static cl::opt<bool> NoBackedge("spp-no-backedge", cl::init(false));
 
 // Bugpoint likes to reduce a crash into _any_ crash (including assertion
 // failures due to configuration problems).  If we're reducing a 'real' crash
@@ -167,10 +172,6 @@ struct PlaceBackedgeSafepointsImpl : public LoopPass {
     AU.setPreservesAll();
   }
 };
-
-cl::opt<bool> NoEntry("spp-no-entry", cl::init(false));
-cl::opt<bool> NoCall("spp-no-call", cl::init(false));
-cl::opt<bool> NoBackedge("spp-no-backedge", cl::init(false));
 
 struct PlaceSafepoints : public ModulePass {
   static char ID; // Pass identification, replacement for typeid

@@ -27,7 +27,7 @@
 
 using namespace llvm;
 
-cl::opt<bool> AllowNonEscapingUnrelocatedValues(
+static cl::opt<bool> AllowNonEscapingUnrelocatedValues(
     "spp-verifier-allow-non-escaping-unrelocated-values", cl::init(false));
 
 struct SafepointIRVerifier : public FunctionPass {
