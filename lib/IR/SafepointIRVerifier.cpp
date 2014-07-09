@@ -30,7 +30,7 @@
 using namespace llvm;
 using namespace std;
 
-cl::opt<bool> AllowNonEscapingUnrelocatedValues(
+static cl::opt<bool> AllowNonEscapingUnrelocatedValues(
     "spp-verifier-allow-non-escaping-unrelocated-values",
     cl::init(false));
 
