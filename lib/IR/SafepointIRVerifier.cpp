@@ -191,7 +191,15 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     BasicBlock *current = worklist.back();
     worklist.pop_back();
 
-    std::set<Value *> nowvalid;
+    // Anything invalid an _any_ of our input blocks is invalid in this one
+    std::set<Value *> invalid;
+    for (pred_iterator PI = pred_begin(current), E = pred_end(current); PI != E;
+         ++PI) {
+      BasicBlock *Pred = *PI;
+      bb_exit_state exit = state[Pred];
+      invalid.insert(exit._invalid.begin(), exit._invalid.end());
+    }
+
     // First, handle all the PHINodes in a path sensative manner
     for (BasicBlock::iterator itr = current->begin(),
                               end = current->getFirstNonPHI();
@@ -217,23 +225,10 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
           }
         }
       }
-      nowvalid.insert(phi);
-    }
-
-    // Anything invalid an _any_ of our input blocks is invalid in this one
-    std::set<Value *> invalid;
-    for (pred_iterator PI = pred_begin(current), E = pred_end(current); PI != E;
-         ++PI) {
-      BasicBlock *Pred = *PI;
-      bb_exit_state exit = state[Pred];
-      invalid.insert(exit._invalid.begin(), exit._invalid.end());
-    }
-
-    // If we encounter a def via a backedge, remove it from the set of
-    // invalid uses - in this case, all phi defs are valid, no matter what cam
-    // in through the merge set
-    for (Value *Val : nowvalid) {
-      invalid.erase(Val);
+      // If we encounter a def via a backedge, remove it from the set of
+      // invalid uses - in this case, all phi defs are valid, no matter what cam
+      // in through the merge set
+      invalid.erase(phi);
     }
 
     // Then scan through all the rest of the instructions, checking for invalid
