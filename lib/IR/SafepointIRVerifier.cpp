@@ -53,7 +53,7 @@ namespace {
 // Without reasoning about control flow, that might not have been the dynamic
 // value which got invalidated.
 void add_transative_closure(Value *gcptr, std::set<Value *> &invalid) {
-  if (invalid.find(gcptr) != invalid.end()) {
+  if (invalid.count(gcptr)) {
     // base case - do not continue
     return;
   }
@@ -204,7 +204,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
       for (size_t i = 0; i < phi->getNumIncomingValues(); i++) {
         Value *InVal = phi->getIncomingValue(i);
         BasicBlock *inBB = phi->getIncomingBlock(i);
-        if (state[inBB]._invalid.find(InVal) != state[inBB]._invalid.end()) {
+        if (state[inBB]._invalid.count(InVal)) {
           errs() << "Illegal use of unrelocated value in phi edge-reachable "
                     "from safepoint found!\n";
           errs() << "Def: ";
@@ -212,8 +212,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
           errs() << "Use: ";
           inst->dump();
           if (RelocationPHIEscapes(phi)) {
-            assert(state[inBB]._invalid.find(InVal) ==
-                       state[inBB]._invalid.end() &&
+            assert(!state[inBB]._invalid.count(InVal) &&
                    "use of invalid unrelocated value after safepoint!");
           }
         }
@@ -234,10 +233,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     // invalid uses - in this case, all phi defs are valid, no matter what cam
     // in through the merge set
     for (Value *Val : nowvalid) {
-      std::set<Value *>::iterator invalid_itr = invalid.find(Val);
-      if (invalid_itr != invalid.end()) {
-        invalid.erase(invalid_itr);
-      }
+      invalid.erase(Val);
     }
 
     // Then scan through all the rest of the instructions, checking for invalid
@@ -249,13 +245,13 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
 
       // Check all the uses
       for (Value *op : inst->operands()) {
-        if (invalid.find(op) != invalid.end()) {
+        if (invalid.count(op)) {
           errs() << "Illegal use of unrelocated value after safepoint found!\n";
           errs() << "Def: ";
           op->dump();
           errs() << "Use: ";
           inst->dump();
-          assert(invalid.find(op) == invalid.end() &&
+          assert(!invalid.count(op) &&
                  "use of invalid unrelocated value after safepoint!");
         }
       }
@@ -301,9 +297,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
       }
       // If we encounter a def via a backedge, remove it from the set of
       // invalid uses
-      if (invalid.find(inst) != invalid.end()) {
-        invalid.erase(inst);
-      }
+      invalid.erase(inst);
     }
 
     // If our output has changed, add any successor blocks to the worklist

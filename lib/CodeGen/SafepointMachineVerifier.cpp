@@ -39,7 +39,7 @@ public:
 
 private:
   void addTransativeClosure(unsigned reg, std::set<unsigned> &invalid) {
-    if (invalid.find(reg) != invalid.end()) {
+    if (invalid.count(reg)) {
       return;
     }
     invalid.insert(reg);
@@ -147,8 +147,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
           // verifer
           // because those unused relocation phis should be cleaned up by the
           // optimizer
-          assert(state[incomingBB]._invalid.find(reg) ==
-                     state[incomingBB]._invalid.end() &&
+          assert(!state[incomingBB]._invalid.count(reg) &&
                  "use of invalid unrelocated machine value after safepoint!");
         }
       }
@@ -165,10 +164,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
     // if an invalid value reaches its def, it should be removed from the list
     for (unsigned val : validByDef) {
-      std::set<unsigned>::iterator invalid_itr = invalid.find(val);
-      if (invalid_itr != invalid.end()) {
-        invalid.erase(invalid_itr);
-      }
+      invalid.erase(val);
     }
 
     // now scan the rest of the machine instruction in the block
@@ -180,19 +176,18 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
       if (inst->getNumOperands() > 0) {
         // first remove new def from the invalid list
         for (const MachineOperand &Operand : inst->operands()) {
-          if (Operand.isReg() && Operand.isDef() &&
-              invalid.find(Operand.getReg()) != invalid.end()) {
-            invalid.erase(invalid.find(Operand.getReg()));
+          if (Operand.isReg() && Operand.isDef()) {
+            invalid.erase(Operand.getReg());
           }
         }
 
         // check whether any operand is invalid
         if (inst->getOpcode() != TargetOpcode::STATEPOINT) {
           for (unsigned i = 1; i < inst->getNumOperands(); i++) {
-            assert(
-                !inst->getOperand(i).isReg() || !inst->getOperand(i).isUse() ||
-                invalid.find(inst->getOperand(i).getReg()) == invalid.end() &&
-                    "use of invalid unrelocated value after safepoint!");
+            assert(!inst->getOperand(i).isReg() ||
+                   !inst->getOperand(i).isUse() ||
+                   !invalid.count(inst->getOperand(i).getReg()) &&
+                       "use of invalid unrelocated value after safepoint!");
           }
         } else {
           // only check call argument for statepoint because vmstate is not
@@ -201,10 +196,10 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
                  "number of call args must be immediate");
           int num_arg = inst->getOperand(0).getImm();
           for (int i = 2; i < 2 + num_arg; i++) {
-            assert(
-                !inst->getOperand(i).isReg() || !inst->getOperand(i).isUse() ||
-                invalid.find(inst->getOperand(i).getReg()) == invalid.end() &&
-                    "use of invalid unrelocated value after safepoint!");
+            assert(!inst->getOperand(i).isReg() ||
+                   !inst->getOperand(i).isUse() ||
+                   !invalid.count(inst->getOperand(i).getReg()) &&
+                       "use of invalid unrelocated value after safepoint!");
           }
         }
 
@@ -226,8 +221,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
           for (unsigned i = 4 + num_arg, e = inst->getNumOperands(); i != e;
                i++) {
             MachineOperand &MO = inst->getOperand(i);
-            if (MO.isFI() && frameIndexVRegPair.find(MO.getIndex()) !=
-                                 frameIndexVRegPair.end()) {
+            if (MO.isFI() && frameIndexVRegPair.count(MO.getIndex())) {
               // We cannot assert there is always a match, because we could
               // spill a 0 (null value) to the stack and that stack does not
               // have a match vreg

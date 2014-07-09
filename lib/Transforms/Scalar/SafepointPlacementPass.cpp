@@ -456,11 +456,11 @@ void addBasesAsLiveValues(std::set<Value *> &liveset,
   // safepoints can get the properly relocated base register.
   std::set<Value *> missing;
   for (Value *live : liveset) {
-    assert(base_pairs.find(live) != base_pairs.end());
+    assert(base_pairs.count(live));
     Value *base = base_pairs[live];
     assert(base);
-    if (liveset.find(base) == liveset.end()) {
-      assert(base_pairs.find(base) == base_pairs.end());
+    if (!liveset.count(base)) {
+      assert(!base_pairs.count(base));
       // uniqued by set insert
       missing.insert(base);
     }
@@ -1337,7 +1337,7 @@ void SafepointPlacementImpl::InsertSafepoint(
     for (Value *Live : liveset) {
       livevec.push_back(Live);
 
-      assert(base_pairs.find(Live) != base_pairs.end());
+      assert(base_pairs.count(Live));
       Value *base = base_pairs[Live];
       basevec.push_back(base);
     }
@@ -1707,10 +1707,9 @@ Value *findBaseDefiningValue(Value *I) {
 
 /// Returns the base defining value for this value.
 Value *findBaseDefiningValueCached(Value *I, DefiningValueMapTy &cache) {
-  if (cache.find(I) == cache.end()) {
+  if (!cache.count(I)) {
     cache[I] = findBaseDefiningValue(I);
   }
-  assert(cache.find(I) != cache.end());
 
   if (TraceLSP) {
     errs() << "fBDV-cached: " << I->getName() << " -> " << cache[I]->getName()
@@ -1923,19 +1922,19 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
                "zero input phis are illegal");
         for (Value *InVal : phi->operands()) {
           Value *local = findBaseOrBDV(InVal, cache);
-          if (!isKnownBaseResult(local) && states.find(local) == states.end()) {
+          if (!isKnownBaseResult(local) && !states.count(local)) {
             states[local] = PhiState();
             done = false;
           }
         }
       } else if (SelectInst *sel = dyn_cast<SelectInst>(v)) {
         Value *local = findBaseOrBDV(sel->getTrueValue(), cache);
-        if (!isKnownBaseResult(local) && states.find(local) == states.end()) {
+        if (!isKnownBaseResult(local) && !states.count(local)) {
           states[local] = PhiState();
           done = false;
         }
         local = findBaseOrBDV(sel->getFalseValue(), cache);
-        if (!isKnownBaseResult(local) && states.find(local) == states.end()) {
+        if (!isKnownBaseResult(local) && !states.count(local)) {
           states[local] = PhiState();
           done = false;
         }
@@ -2133,7 +2132,7 @@ Value *findBasePointer(Value *I, DefiningValueMapTy &cache,
     }
     cache[v] = base;
   }
-  assert(cache.find(def) != cache.end());
+  assert(cache.count(def));
   return cache[def];
 }
 }
@@ -2513,14 +2512,14 @@ void updatePHIUses(DominatorTree &DT, Value *oldDef,
     for (pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; PI++) {
       BasicBlock *pred = *PI;
       Value *def = nullptr;
-      if (seen.find(pred) != seen.end() && nullptr != seen[pred]) {
+      if (seen.count(pred) && nullptr != seen[pred]) {
         def = seen[pred];
         // Note: seen[pred] may actual dominate phi.  In particular,
         // backedges of loops with a def in the preheader make this really
         // common.  The phi is still needed.
         //          assert( isPotentiallyReachable(seen[pred]->getParent(), BB,
         // &DT) && "sanity check - provably reachable by alg above.");
-      } else if (seen.find(pred) != seen.end() && nullptr == seen[pred]) {
+      } else if (seen.count(pred) && nullptr == seen[pred]) {
         // We encountered a kill here.  By assumption, the input is invalid
         // and doesn't matter.  This can happen when we insert one safepoint
         // which can reach another and the live set of the former is greater
@@ -2535,8 +2534,7 @@ void updatePHIUses(DominatorTree &DT, Value *oldDef,
         // cleanly.
         def = ConstantPointerNull::get(cast<PointerType>(phi->getType()));
       } else {
-        assert(seen.find(pred) == seen.end() &&
-               "kill's should have been handled above");
+        assert(!seen.count(pred) && "kill's should have been handled above");
         // This must be coming from an unreachable block
         def = ConstantPointerNull::get(cast<PointerType>(phi->getType()));
         // Can't assert unreachable since routine is conservative about
@@ -2749,7 +2747,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
     assert(currentBB && "Can't be null");
     assert((!currentDef || currentDef->getType() == oldDef->getType()) &&
            "Types of definitions must match");
-    if (seen.find(currentBB) != seen.end()) {
+    if (seen.count(currentBB)) {
       // we've seen this before, no need to revisit
       // we need the check here since the same item could be on the worklist
       // multiple times.  We could try to uniquify items, but that's
@@ -2813,8 +2811,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
             // We'll need to make sure that this use gets updated properly.
             // Note that the phi is live _even if_ the basic block is not due
             // to a relocation phi
-            assert(phis.find(phi) != phis.end() &&
-                   "must already be a use of oldDef");
+            assert(phis.count(phi) && "must already be a use of oldDef");
 
             break;
           }
@@ -2887,14 +2884,14 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree &DT, Function &F,
              << " with value %" << (exitDef ? exitDef->getName() : "NULL")
              << "\n";
     }
-    assert(seen.find(currentBB) == seen.end() && "we're overwriting!");
+    assert(!seen.count(currentBB) && "we're overwriting!");
     seen[currentBB] = exitDef;
 
     for (succ_iterator PI = succ_begin(currentBB), E = succ_end(currentBB);
          PI != E; ++PI) {
       BasicBlock *Succ = *PI;
       // optimization to avoid adding redundant work to worklist
-      if (seen.find(Succ) != seen.end()) {
+      if (seen.count(Succ)) {
         // we've seen this before, no need to revisit
         if (TraceLSP) {
           errs() << "Skipping %" << Succ->getName() << " as previously seen\n";
