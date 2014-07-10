@@ -62,7 +62,7 @@ bool llvm::isGCResult(const Instruction* inst) {
   return false;
 }
 
-extern cl::opt<bool> AllFunctions;
+cl::opt<bool> AllFunctions ("spp-all-functions", cl::init(false) );
 
 bool llvm::isGCPointerType(llvm::Type* Ty) {
 

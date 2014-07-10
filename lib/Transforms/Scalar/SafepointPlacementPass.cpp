@@ -76,7 +76,7 @@ cl::opt<bool> AllBackedges ("spp-all-backedges", cl::init(false));
 // Only go as far as confirming base pointers exist, useful for fault isolation
 cl::opt<bool> BaseRewriteOnly ("spp-base-rewrite-only", cl::init(false) );
 // Add safepoints to all functions, not just the ones with attributes
-cl::opt<bool> AllFunctions ("spp-all-functions", cl::init(false) );
+extern cl::opt<bool> AllFunctions;
 // Include deopt state in safepoints?
 cl::opt<bool> UseVMState ("spp-use-vm-state", cl::init(true) );
 
