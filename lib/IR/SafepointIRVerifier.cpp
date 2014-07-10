@@ -174,7 +174,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
   // Start with all of the blocks containing statepoints, iterate from there to
   // establish and check the invalid sets
   for (inst_iterator itr = inst_begin(F), end = inst_end(F); itr != end;
-       itr++) {
+       ++itr) {
     Instruction *inst = &*itr;
     if (isa<InvokeInst>(inst) || isa<CallInst>(inst)) {
       CallSite CS(inst);
@@ -203,13 +203,13 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     // First, handle all the PHINodes in a path sensative manner
     for (BasicBlock::iterator itr = current->begin(),
                               end = current->getFirstNonPHI();
-         itr != end; itr++) {
+         itr != end; ++itr) {
       Instruction *inst = &*itr;
       PHINode *phi = cast<PHINode>(inst);
       // The 'use' check for a phi needs to be path sensative.  Remember, a
       // phi use is valid if the use if valid in the source block, not the
       // current block!
-      for (size_t i = 0; i < phi->getNumIncomingValues(); i++) {
+      for (size_t i = 0; i < phi->getNumIncomingValues(); ++i) {
         Value *InVal = phi->getIncomingValue(i);
         BasicBlock *inBB = phi->getIncomingBlock(i);
         if (state[inBB]._invalid.count(InVal)) {
@@ -235,7 +235,7 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
     // uses and
     for (BasicBlock::iterator itr = current->getFirstNonPHI(),
                               end = current->end();
-         itr != end; itr++) {
+         itr != end; ++itr) {
       Instruction *inst = &*itr;
 
       // Check all the uses
@@ -268,10 +268,9 @@ bool SafepointIRVerifier::runOnFunction(Function &F) {
 
           const int gc_begin =
               7 + num_call_args + 2 * num_stacks + 2 * num_locals + num_mon;
-          assert(gc_begin <= std::distance(CS.arg_begin(), CS.arg_end()));
+          assert(gc_begin <= CS.arg_size());
 
-          for (int i = gc_begin;
-               i < std::distance(CS.arg_begin(), CS.arg_end()); i++) {
+          for (int i = gc_begin; i < CS.arg_size(); ++i) {
             Value *op = CS.getArgument(i);
 
             assert(isa<Argument>(op) || isa<Constant>(op) ||

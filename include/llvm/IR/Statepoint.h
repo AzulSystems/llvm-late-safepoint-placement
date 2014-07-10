@@ -82,12 +82,12 @@ public:
 
   typename CallSiteTy::arg_iterator call_args_begin() {
     int offset = 7;
-    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    assert(offset <= callSite.arg_size());
     return callSite.arg_begin() + offset;
   }
   typename CallSiteTy::arg_iterator call_args_end() {
     int offset = 7 + numCallArgs();
-    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    assert(offset <= callSite.arg_size());
     return callSite.arg_begin() + offset;
   }
 
@@ -95,7 +95,7 @@ public:
   typename CallSiteTy::arg_iterator vm_state_end() {
     int offset = 7 + numCallArgs() + 2 * numJavaStackElements() +
                  2 * numJavaLocals() + numJavaMonitors();
-    assert(offset <= std::distance(callSite.arg_begin(), callSite.arg_end()));
+    assert(offset <= callSite.arg_size());
     return callSite.arg_begin() + offset;
   }
 

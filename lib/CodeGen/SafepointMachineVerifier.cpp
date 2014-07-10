@@ -137,7 +137,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
     for (MachineBasicBlock::iterator itr = currentBlock->begin(),
                                      end = currentBlock->getFirstNonPHI();
-         itr != end; itr++) {
+         itr != end; ++itr) {
       MachineInstr *inst = &*itr;
 
       assert(inst->isPHI() && "must be phi");
@@ -164,7 +164,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
     // now scan the rest of the machine instruction in the block
     for (MachineBasicBlock::iterator itr = currentBlock->getFirstNonPHI(),
                                      end = currentBlock->end();
-         itr != end; itr++) {
+         itr != end; ++itr) {
       MachineInstr *inst = &*itr;
 
       if (inst->getNumOperands() > 0) {
@@ -177,7 +177,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
 
         // check whether any operand is invalid
         if (inst->getOpcode() != TargetOpcode::STATEPOINT) {
-          for (unsigned i = 1; i < inst->getNumOperands(); i++) {
+          for (unsigned i = 1; i < inst->getNumOperands(); ++i) {
             assert(!inst->getOperand(i).isReg() ||
                    !inst->getOperand(i).isUse() ||
                    !invalid.count(inst->getOperand(i).getReg()) &&
@@ -189,7 +189,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
           assert(inst->getOperand(0).isImm() &&
                  "number of call args must be immediate");
           int num_arg = inst->getOperand(0).getImm();
-          for (int i = 2; i < 2 + num_arg; i++) {
+          for (int i = 2; i < 2 + num_arg; ++i) {
             assert(!inst->getOperand(i).isReg() ||
                    !inst->getOperand(i).isUse() ||
                    !invalid.count(inst->getOperand(i).getReg()) &&
@@ -213,7 +213,7 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
                  "number of call args must be immediate");
           int num_arg = inst->getOperand(0).getImm();
           for (unsigned i = 4 + num_arg, e = inst->getNumOperands(); i != e;
-               i++) {
+               ++i) {
             MachineOperand &MO = inst->getOperand(i);
             if (MO.isFI() && frameIndexVRegPair.count(MO.getIndex())) {
               // We cannot assert there is always a match, because we could
