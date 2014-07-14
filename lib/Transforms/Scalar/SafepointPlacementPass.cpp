@@ -120,6 +120,20 @@ static cl::opt<bool> NoBackedge("spp-no-backedge", cl::init(false));
 
 static bool VMStateRequired() { return !AllFunctions && UseVMState; }
 
+static bool isFnAttrSet(const Function &F, const char *Attr) {
+  if (AllFunctions)
+    return true;
+
+  bool IsFnAttrSet = F.getFnAttribute(Attr).getValueAsString().equals("true");
+  if (IsFnAttrSet && F.getName().equals("gc.safepoint_poll")) {
+    // go read the module pass comment above
+    errs() << "WARNING: Ignoring (illegal) request to place safepoints in "
+              "gc.safepoint_poll\n";
+    return false;
+  }
+  return IsFnAttrSet;
+}
+
 /* Note: PlaceBackedgeSafepointsImpl need to be instances of ModulePass, not
    LoopPass.  LoopPass is not allowed to do any cross module optimization
    (such as inlining).  The PassManager will run FunctionPasses (of which the
@@ -176,15 +190,8 @@ struct PlaceBackedgeSafepointsImpl : public LoopPass {
 struct PlaceSafepoints : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
 
-  bool EnableEntrySafepoints;
-  bool EnableBackedgeSafepoints;
-  bool EnableCallSafepoints;
-
   PlaceSafepoints() : ModulePass(ID) {
     initializePlaceSafepointsPass(*PassRegistry::getPassRegistry());
-    EnableEntrySafepoints = !NoEntry;
-    EnableBackedgeSafepoints = !NoBackedge;
-    EnableCallSafepoints = !NoCall;
   }
   bool runOnModule(Module &M) override {
     bool modified = false;
@@ -535,20 +542,6 @@ bool PlaceBackedgeSafepointsImpl::runOnLoop(Loop *L, LPPassManager &LPM) {
 
   Function *Func = header->getParent();
   assert(Func);
-  bool shouldRun =
-      AllFunctions || Func->getFnAttribute("gc-add-backedge-safepoints")
-                          .getValueAsString()
-                          .equals("true");
-  if (shouldRun && Func->getName().equals("gc.safepoint_poll")) {
-    assert(AllFunctions && "misconfiguration");
-    // go read the module pass comment above
-    shouldRun = false;
-    errs() << "WARNING: Ignoring (illegal) request to place safepoints in "
-              "gc.safepoint_poll\n";
-  }
-  if (!shouldRun) {
-    return false;
-  }
 
   bool modified = false;
   for (pred_iterator PI = pred_begin(header), E = pred_end(header); PI != E;
@@ -594,21 +587,6 @@ bool PlaceBackedgeSafepointsImpl::runOnLoop(Loop *L, LPPassManager &LPM) {
 
 static Instruction *findLocationForEntrySafepoint(Function &F,
                                                   DominatorTree &DT) {
-  bool shouldRun =
-      AllFunctions ||
-      F.getFnAttribute("gc-add-entry-safepoints").getValueAsString().equals(
-          "true");
-  if (shouldRun && F.getName().equals("gc.safepoint_poll")) {
-    assert(AllFunctions && "misconfiguration");
-    // go read the module pass comment above
-    shouldRun = false;
-    errs() << "WARNING: Ignoring (illegal) request to place safepoints in "
-              "gc.safepoint_poll\n";
-  }
-  if (!shouldRun) {
-    return nullptr;
-  }
-
   // Conceptually, this poll needs to be on method entry, but in practice, we
   // place it as late in the entry block as possible.  We need to be after the
   // first BCI (to have a valid VM state), but there's no reason we can't be
@@ -665,20 +643,6 @@ static void findCallSafepoints(Function &F,
 static void findCallSafepoints(Function &F,
                                std::vector<CallSite> &Found /*rval*/) {
   assert(Found.empty() && "must be empty!");
-  bool shouldRun =
-      AllFunctions ||
-      F.getFnAttribute("gc-add-call-safepoints").getValueAsString().equals(
-          "true");
-  if (shouldRun && F.getName().equals("gc.safepoint_poll")) {
-    assert(AllFunctions && "misconfiguration");
-    // go read the module pass comment above
-    shouldRun = false;
-    errs() << "WARNING: Ignoring (illegal) request to place safepoints in "
-              "gc.safepoint_poll\n";
-  }
-  if (!shouldRun) {
-    return;
-  }
 
   for (inst_iterator itr = inst_begin(F), end = inst_end(F); itr != end;
        ++itr) {
@@ -956,7 +920,7 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
 
   std::vector<CallSite> ParsePointNeeded;
 
-  if (EnableBackedgeSafepoints) {
+  if (!NoBackedge && isFnAttrSet(F, "gc-add-backedge-safepoints")) {
     // Construct a pass manager to run the LoopPass backedge logic.  We
     // need the pass manager to handle scheduling all the loop passes
     // appropriately.  Doing this by hand is painful and just not worth messing
@@ -988,21 +952,17 @@ bool PlaceSafepoints::runOnFunction(Function &F) {
     }
   }
 
-  if (EnableEntrySafepoints) {
+  if (!NoEntry && isFnAttrSet(F, "gc-add-entry-safepoints")) {
     DT.recalculate(F);
     Instruction *term = findLocationForEntrySafepoint(F, DT);
-    if (!term) {
-      // policy choice not to insert?
-    } else {
-      std::vector<CallSite> RuntimeCalls;
-      InsertSafepointPoll(DT, term, RuntimeCalls);
-      modified = true;
-      ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
-                              RuntimeCalls.end());
-    }
+    std::vector<CallSite> RuntimeCalls;
+    InsertSafepointPoll(DT, term, RuntimeCalls);
+    modified = true;
+    ParsePointNeeded.insert(ParsePointNeeded.end(), RuntimeCalls.begin(),
+                            RuntimeCalls.end());
   }
 
-  if (EnableCallSafepoints) {
+  if (!NoCall && isFnAttrSet(F, "gc-add-call-safepoints")) {
     DT.recalculate(F);
     std::vector<CallSite> Calls;
     findCallSafepoints(F, Calls);
