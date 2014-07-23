@@ -1006,6 +1006,9 @@ void Emitter<CodeEmitter>::emitInstruction(MachineInstr &MI,
                                            const MCInstrDesc *Desc) {
   DEBUG(dbgs() << MI);
 
+  assert( Desc->Opcode != TargetOpcode::STATEPOINT &&
+          "old style JIT does not support STATEPOINT" );
+ 
   // If this is a pseudo instruction, lower it.
   switch (Desc->getOpcode()) {
   case X86::ADD16rr_DB:      Desc = UpdateOp(MI, II, X86::OR16rr); break;

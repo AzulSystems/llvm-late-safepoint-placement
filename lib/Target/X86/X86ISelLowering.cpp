@@ -18212,6 +18212,11 @@ X86TargetLowering::EmitInstrWithCustomInserter(MachineInstr *MI,
   case X86::EH_SjLj_LongJmp64:
     return emitEHSjLjLongJmp(MI, BB);
 
+  case TargetOpcode::STATEPOINT:
+    // As an implementation detail, STATEPOINT shares the STACKMAP format at
+    // this point in the process.  We devirge later
+    return emitPatchPoint(MI, BB);
+
   case TargetOpcode::STACKMAP:
   case TargetOpcode::PATCHPOINT:
     return emitPatchPoint(MI, BB);
@@ -19647,7 +19652,7 @@ static SDValue PerformSELECTCombine(SDNode *N, SelectionDAG &DAG,
       // Check if SETCC has already been promoted
       TLI.getSetCCResultType(*DAG.getContext(), VT) == CondVT &&
       // Check that condition value type matches vselect operand type
-      CondVT == VT) { 
+      CondVT == VT) {
 
     assert(Cond.getValueType().isVector() &&
            "vector select expects a vector selector!");

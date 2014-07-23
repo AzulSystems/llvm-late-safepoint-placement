@@ -734,6 +734,8 @@ void X86AsmPrinter::EmitEndOfAsmFile(Module &M) {
       }
       Stubs.clear();
     }
+
+    SM.serializeToStackMapSection();
   }
 }
 

@@ -797,6 +797,25 @@ void PEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &Fn,
         continue;
       }
 
+      // Note: The code for this used to be shared with PATCHPOINT.  In order
+      // to simplify merges, I separated it for the moment.
+      // S: Frame indicies in debug values are encoded in a target independent
+      // S: way with simply the frame index and offset rather than any
+      // S: target-specific addressing mode.
+      if (MI->getOpcode() == TargetOpcode::STATEPOINT) {
+        assert((!MI->isDebugValue() || i == 0) &&
+               "Frame indicies can only appear as the first operand of a "
+               "DBG_VALUE machine instruction");
+        unsigned Reg;
+        MachineOperand &Offset = MI->getOperand(i + 1);
+        const unsigned refOffset =
+          TFI->getFrameIndexReferenceForGC(Fn, MI->getOperand(i).getIndex(), Reg);
+
+        Offset.setImm(Offset.getImm() + refOffset);
+        MI->getOperand(i).ChangeToRegister(Reg, false /*isDef*/);
+        continue;
+      }
+
       // Some instructions (e.g. inline asm instructions) can have
       // multiple frame indices and/or cause eliminateFrameIndex
       // to insert more than one instruction. We need the register

@@ -236,8 +236,11 @@ void StackMaps::recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
 
   // Record the stack size of the current function.
   const MachineFrameInfo *MFI = AP.MF->getFrameInfo();
+  const TargetRegisterInfo *RegInfo = AP.MF->getTarget().getRegisterInfo();
+  const bool DynamicFrameSize = MFI->hasVarSizedObjects() ||
+    RegInfo->needsStackRealignment(*(AP.MF));
   FnStackSize[AP.CurrentFnSym] =
-    MFI->hasVarSizedObjects() ? UINT64_MAX : MFI->getStackSize();
+    DynamicFrameSize ? UINT64_MAX : MFI->getStackSize();
 }
 
 void StackMaps::recordStackMap(const MachineInstr &MI) {
@@ -347,6 +350,13 @@ void StackMaps::emitConstantPoolEntries(MCStreamer &OS) {
 ///     uint8  : Reserved
 ///     uint8  : Size in Bytes
 ///   }
+///   CHANGE BEGIN
+///   uint16 : NumCalleeSave
+///   [NumCalleSave] {
+///     uint16 : Dwarf RegNum
+///     int32  : Offset
+///   }
+///   CHANGE END
 ///   uint32 : Padding (only if required to align to 8 byte)
 /// }
 ///
@@ -467,6 +477,7 @@ void StackMaps::emitCallsiteEntries(MCStreamer &OS,
       OS.EmitIntValue(0, 1);
       OS.EmitIntValue(LO.Size, 1);
     }
+
     // Emit alignment to 8 byte.
     OS.EmitValueToAlignment(8);
   }

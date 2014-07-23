@@ -25,6 +25,8 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeBranchFolderPassPass(Registry);
   initializeCodeGenPreparePass(Registry);
   initializeDeadMachineInstructionElimPass(Registry);
+  // machine level safepoint verifier
+  initializeSafepointMachineVerifierPass(Registry);
   initializeEarlyIfConverterPass(Registry);
   initializeExpandPostRAPass(Registry);
   initializeExpandISelPseudosPass(Registry);

@@ -19,6 +19,7 @@
 
 namespace llvm {
 
+class ModulePass;
 class BasicBlockPass;
 class FunctionPass;
 class Pass;
@@ -357,6 +358,13 @@ FunctionPass *createLowerExpectIntrinsicPass();
 // calls such as sqrt.
 //
 FunctionPass *createPartiallyInlineLibCallsPass();
+
+// Safepoint insertion
+ModulePass *createPlaceSafepointsPass();
+
+// VM state management
+FunctionPass *createRemoveFakeVMStateCallsPass();
+FunctionPass *createRemoveRedundantVMStatesPass();
 
 //===----------------------------------------------------------------------===//
 //

@@ -25,6 +25,8 @@ add_llvm_library(LLVMScalarOpts
   PartiallyInlineLibCalls.cpp
   Reassociate.cpp
   Reg2Mem.cpp
+  RemoveRedundantVMStates.cpp
+  SafepointPlacementPass.cpp
   SCCP.cpp
   SROA.cpp
   SampleProfile.cpp

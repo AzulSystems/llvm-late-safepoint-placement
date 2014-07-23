@@ -64,6 +64,14 @@ public:
   int getFrameIndexReference(const MachineFunction &MF, int FI,
                              unsigned &FrameReg) const override;
 
+  // ---------- BEGIN CHANGE -------------------
+  /*not override*/
+  int getFrameIndexOffsetForGC(const MachineFunction &MF, int FI) const;
+  /*override*/
+  int getFrameIndexReferenceForGC(const MachineFunction &MF, int FI,
+                                  unsigned &FrameReg) const;
+  // --------- END CHANGE ---------------------
+
   void eliminateCallFramePseudoInstr(MachineFunction &MF,
                                  MachineBasicBlock &MBB,
                                  MachineBasicBlock::iterator MI) const override;

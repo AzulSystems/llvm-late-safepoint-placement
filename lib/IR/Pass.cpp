@@ -234,6 +234,8 @@ PassNameParser::~PassNameParser() {
   // attempting to remove the registration listener is an error.
 }
 
+TEMPLATE_INSTANTIATION(class cl::parser<const PassInfo *>);
+
 //===----------------------------------------------------------------------===//
 //   AnalysisUsage Class Implementation
 //

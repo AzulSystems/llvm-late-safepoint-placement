@@ -614,6 +614,7 @@ bool PeepholeOptimizer::isLoadFoldable(
   if (!MI->getOperand(0).getSubReg() &&
       TargetRegisterInfo::isVirtualRegister(Reg) &&
       MRI->hasOneNonDBGUse(Reg)) {
+    // TODO: Having one *user* rather than one *use* would also be fine
     FoldAsLoadDefCandidates.insert(Reg);
     return true;
   }
