@@ -630,11 +630,6 @@ static Instruction* findLocationForEntrySafepoint(Function &F, DominatorTree& DT
   // PERF: Can we avoid this for non-recursive functions?
   // PERF: Don't emit if call guaranteed to occur
 
-  if (F.begin() == F.end()) {
-    // Empty function, nothing was done.
-    return nullptr;
-  }
-
   // Due to the way the frontend generates IR, we may have a couple of intial
   // basic blocks before the first bytecode.  These will be single-entry
   // single-exit blocks which conceptually are just part of the first 'real
