@@ -246,7 +246,7 @@ struct RemoveFakeVMStateCalls : public FunctionPass {
 
       // Remove the call itself
       CI->eraseFromParent();
-      instToRemove[i] = NULL;
+      instToRemove[i] = nullptr;
     }
 
     // remove the functions which are now dead - note that the use of a set is
@@ -304,7 +304,7 @@ namespace SafepointPlacementImpl {
     /// The bounds of the inserted code for the safepoint
     std::pair<Instruction*, Instruction*> safepoint;
 
-    /// The result of the safepointing call (or NULL)
+    /// The result of the safepointing call (or nullptr)
     Value* result;
     
     void verify() {
@@ -618,7 +618,7 @@ static Instruction* findLocationForEntrySafepoint(Function &F, DominatorTree& DT
     errs() << "WARNING: Ignoring (illegal) request to place safepoints in gc.safepoint_poll\n";
   }
   if( !shouldRun ) {
-    return NULL;
+    return nullptr;
   }
 
   // Conceptually, this poll needs to be on method entry, but in practice, we
@@ -632,7 +632,7 @@ static Instruction* findLocationForEntrySafepoint(Function &F, DominatorTree& DT
 
   if (F.begin() == F.end()) {
     // Empty function, nothing was done.
-    return NULL;
+    return nullptr;
   }
 
   // Due to the way the frontend generates IR, we may have a couple of intial
@@ -652,7 +652,7 @@ static Instruction* findLocationForEntrySafepoint(Function &F, DominatorTree& DT
       // split node
       break;
     }
-    if( NULL == nextBB->getUniquePredecessor() ) {
+    if( nullptr == nextBB->getUniquePredecessor() ) {
       // next node is a join node, stop here
       // PERF: There's technically no correctness reason we need to stop here.
       // We mostly stop to avoid weird looking situations like having an
@@ -854,7 +854,7 @@ static bool insertParsePoints(Function& F, DominatorTree& DT,
   }
   for(size_t i = 0; i < holders.size(); i++) {
     holders[i]->eraseFromParent();
-    holders[i] = NULL;
+    holders[i] = nullptr;
   }
   holders.clear();
 
@@ -865,7 +865,7 @@ static bool insertParsePoints(Function& F, DominatorTree& DT,
     struct PartiallyConstructedSafepointRecord& info = records[i];
     CallSite& CS = toUpdate[i];
     // locate the defining VM state object for this location
-    CallInst* vm_state = NULL;
+    CallInst* vm_state = nullptr;
     if( VMStateRequired() ) {
       vm_state = findVMState(CS.getInstruction(), &DT);
       BUGPOINT_CLEAN_EXIT_IF( !vm_state );
@@ -1162,8 +1162,8 @@ void SafepointPlacementImpl::InsertSafepointPoll(DominatorTree& DT, Instruction*
 
   // If your poll function includes an unreachable at the end, that's not
   // valid.  Bugpoint likes to create this, so check for it.
-  BUGPOINT_CLEAN_EXIT_IF( !isPotentiallyReachable(&*start, &*after, NULL, NULL) );
-  assert( isPotentiallyReachable(&*start, &*after, NULL, NULL) &&
+  BUGPOINT_CLEAN_EXIT_IF( !isPotentiallyReachable(&*start, &*after, nullptr, nullptr) );
+  assert( isPotentiallyReachable(&*start, &*after, nullptr, nullptr) &&
           "malformed poll function");
   
   scanInlinedCode(&*(start), &*(after), calls, BBs);
@@ -1246,7 +1246,7 @@ void SafepointPlacementImpl::analyzeParsePointLiveness(DominatorTree& DT, const 
 
   BasicBlock* BB = inst->getParent();
   std::set<llvm::Value*> liveset;
-  findLiveGCValuesAtInst(inst, BB, DT, NULL, liveset);
+  findLiveGCValuesAtInst(inst, BB, DT, nullptr, liveset);
 
   if( PrintLiveSet ) {
     // Note: This output is used by several of the test cases
@@ -1325,7 +1325,7 @@ void SafepointPlacementImpl::fixupLiveness(DominatorTree& DT, const CallSite& CS
       // Record new defs those are dominating and live at the safepoint (we
       // need to make sure def dominates safepoint since our liveness analysis
       // has this assumption)
-      if( isLiveAtSafepoint(inst, use, *newDef, DT, NULL)) {
+      if( isLiveAtSafepoint(inst, use, *newDef, DT, nullptr)) {
         // Add the live new defs into liveset and base_pairs
         liveset.insert(newDef);
         base_pairs[newDef] = newDef;
@@ -1710,7 +1710,7 @@ namespace {
     errs() << "unknown type: ";
     I->dump();
     assert( false && "unknown type");
-    return NULL;
+    return nullptr;
   }
 
   /// Returns the base defining value for this value.
@@ -1738,7 +1738,7 @@ namespace {
     return def;
   }
 
-  /// Return the relocated value of def at this safepoint or NULL if def is
+  /// Return the relocated value of def at this safepoint or nullptr if def is
   /// invalidated by this safepoint.
   /// WARNING: It is very easy to write O(n^2) loops with this version.  If you
   /// need to relocate more than one value, please use the version below.
@@ -1753,7 +1753,7 @@ namespace {
         }
       }
     }
-    return NULL;
+    return nullptr;
   }
 
   /// Find the relocation for multiple defs over a safepoint.  Returns the same
@@ -1812,11 +1812,11 @@ namespace {
       Conflict
     };
 
-    PhiState(Status s, Value* b = NULL) : status(s), base(b) {
+    PhiState(Status s, Value* b = nullptr) : status(s), base(b) {
       assert(status != Base || b);
     }
     PhiState(Value* b) : status(Base), base(b) {}
-    PhiState() : status(Unknown), base(NULL) {}
+    PhiState() : status(Unknown), base(nullptr) {}
     PhiState(const PhiState &other) : status(other.status), base(other.base) {
       assert(status != Base || base);
     }
@@ -1837,7 +1837,7 @@ namespace {
     }
 
     void dump() {
-      errs() << status << " (" << base << " - " << (base ? base->getName() : "NULL") << "): ";
+      errs() << status << " (" << base << " - " << (base ? base->getName() : "nullptr") << "): ";
     }
 
    private:
@@ -1920,7 +1920,7 @@ namespace {
   /// For a given value or instruction, figure out what base ptr it's derived
   /// from.  For gc objects, this is simply itself.  On success, returns a value
   /// which is the base pointer.  (This is reliable and can be used for
-  /// relocation.)  On failure, returns NULL.
+  /// relocation.)  On failure, returns nullptr.
   Value* findBasePointer(Value* I, DefiningValueMapTy& cache, std::set<llvm::Value*>& newInsertedDefs) {
     Value* def =  findBaseOrBDV(I, cache);
 
@@ -2115,7 +2115,7 @@ namespace {
               // Either conflict or base.
               assert( states.count(base) );
               base = states[base].getBase();
-              assert(base != NULL && "unknown PhiState!");
+              assert(base != nullptr && "unknown PhiState!");
             }
             assert(base && "can't be null");
             // Must use original input BB since base may not be Instruction
@@ -2139,7 +2139,7 @@ namespace {
               // Either conflict or base.
               assert( states.count(base) );
               base = states[base].getBase();
-              assert(base != NULL && "unknown PhiState!");
+              assert(base != nullptr && "unknown PhiState!");
             }
             assert(base && "can't be null");
             // Must use original input BB since base may not be Instruction
@@ -2246,13 +2246,13 @@ CallInst* SafepointPlacementImpl::findVMState(llvm::Instruction* term, Dominator
     if( !DT->getNode(I->getParent())->getIDom() ) break; // and crash
     BasicBlock *immediateDominator = DT->getNode(I->getParent())->getIDom()->getBlock();
     BUGPOINT_CLEAN_EXIT_IF(!immediateDominator);
-    if (immediateDominator == NULL) break; // and crash!
+    if (immediateDominator == nullptr) break; // and crash!
 
     I = immediateDominator->rbegin();
     E = immediateDominator->rend();
   }
 
-  return NULL;
+  return nullptr;
 }
 
 namespace {
@@ -2406,7 +2406,7 @@ void SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace *
   args.insert( args.end(), liveVariables.begin(), liveVariables.end() );
 
   // Create the statepoint given all the arguments
-  Instruction* token = NULL;
+  Instruction* token = nullptr;
   if( CS.isCall() ) {
     CallInst* toReplace = cast<CallInst>(CS.getInstruction());
     CallInst* call = Builder.CreateCall(gc_statepoint_decl, args, "safepoint_token");
@@ -2440,7 +2440,7 @@ void SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace *
     // Loop over any phi nodes in the original normal dest, update them to
     // point to the newly inserted block rather than the invoke BB.  
     /* scope */ {
-      PHINode *PN = NULL;
+      PHINode *PN = nullptr;
       for (BasicBlock::iterator II = toReplace->getNormalDest()->begin();
            (PN = dyn_cast<PHINode>(II)); ++II) {
         int IDX = PN->getBasicBlockIndex(toReplace->getParent());
@@ -2480,12 +2480,12 @@ void SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace *
   // gc_result hanging off the statepoint node we just inserted
   
   // Only add the gc_result iff there is actually a used result
-  Instruction* gc_result = NULL;
+  Instruction* gc_result = nullptr;
   if( !CS.getType()->isVoidTy() &&
       !CS.getInstruction()->use_empty() ) {
     vector<Type*> types; //one per 'any' type
     types.push_back( CS.getType() ); //result type
-    Value* gc_result_func = NULL;
+    Value* gc_result_func = nullptr;
     if( CS.getType()->isIntegerTy() ) {
       gc_result_func = Intrinsic::getDeclaration(M, Intrinsic::gc_result_int, types);
     } else if( CS.getType()->isFloatingPointTy() ) {
@@ -2534,7 +2534,7 @@ void SafepointPlacementImpl::CreateSafepoint(const CallSite& CS, /* to replace *
   // Need to pass through the last part of the safepoint block so that we
   // don't accidentally update uses in a following gc.relocate which is
   // still conceptually part of the same safepoint.  Gah.
-  Instruction* last = NULL;
+  Instruction* last = nullptr;
   if( !newDefs.empty() ) {
     last = newDefs.back();
   } else if( gc_result ) {
@@ -2584,16 +2584,16 @@ namespace {
       // this will walk through all predecessors (and could have duplicated basicblocks)
       for(pred_iterator PI = pred_begin(BB), E = pred_end(BB); PI != E; PI++) {
         BasicBlock* pred = *PI;
-        Value* def = NULL;
+        Value* def = nullptr;
         if( seen.find(pred) != seen.end() &&
-            NULL != seen[pred] ) {
+            nullptr != seen[pred] ) {
           def = seen[pred];
           // Note: seen[pred] may actual dominate phi.  In particular,
           // backedges of loops with a def in the preheader make this really
           // common.  The phi is still needed.
           //          assert( isPotentiallyReachable(seen[pred]->getParent(), BB, &DT) && "sanity check - provably reachable by alg above.");
         } else if( seen.find(pred) != seen.end() &&
-                   NULL == seen[pred] ) {
+                   nullptr == seen[pred] ) {
           // We encountered a kill here.  By assumption, the input is invalid
           // and doesn't matter.  This can happen when we insert one safepoint
           // which can reach another and the live set of the former is greater
@@ -2827,7 +2827,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F,
     frontier.push_back( make_pair(&F.getEntryBlock(), oldDef) );
   } else {
     // Push the entry block (which has no valid def for old def)
-    frontier.push_back( make_pair(&F.getEntryBlock(), (Value*)NULL) );
+    frontier.push_back( make_pair(&F.getEntryBlock(), (Value*)nullptr) );
   }
   while( !frontier.empty() ) {
     const frontier_node current = frontier.back();
@@ -2838,7 +2838,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F,
 
     if (TraceLSP) {
       errs() << "[TraceRelocations] entering %" << currentBB->getName() << " with value %"
-             << (currentDef ? currentDef->getName() : "NULL") << "\n";
+             << (currentDef ? currentDef->getName() : "nullptr") << "\n";
     }
 
     assert( currentBB && "Can't be null");
@@ -2884,7 +2884,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F,
     // We should never revisit a block we've already decided to insert a phi in.
     assert( !atLeastOnePhiInBB(newPHIs, currentBB) && "If it already has a phi, why are we here?");
 
-    Value* exitDef = NULL;
+    Value* exitDef = nullptr;
 
     int num_preds = std::distance(pred_begin(currentBB), pred_end(currentBB));
     // The most trivial possible condition
@@ -2967,13 +2967,13 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F,
 
         // If we didn't find the value relocated at the safepoint, it wasn't
         // live across the safepoint.  There can be no uses reachable from her
-        // and a NULL will be assigned to it.
+        // and a nullptr will be assigned to it.
         exitDef = findRelocateValueAtSP(inst, exitDef);
       }
     }
     
     if (TraceLSP) {
-      errs() << "[TraceRelocations] leaving %" << currentBB->getName() << " with value %" << (exitDef ? exitDef->getName() : "NULL") << "\n";
+      errs() << "[TraceRelocations] leaving %" << currentBB->getName() << " with value %" << (exitDef ? exitDef->getName() : "nullptr") << "\n";
     }
     assert(seen.find(currentBB) == seen.end() && "we're overwriting!");
     seen[currentBB] = exitDef;
@@ -2996,7 +2996,7 @@ void SafepointPlacementImpl::insertPHIsForNewDef(DominatorTree& DT, Function& F,
   if (TraceLSP) {
     errs() << "[TraceRelocations] map<BasicBlock *, Instruction *> seen == \n";
     for (map<BasicBlock *, Value *>::iterator I = seen.begin(), E = seen.end(); I != E; ++I) {
-      errs() << "\tseen[%" << I->first->getName() << "] = %" << (I->second ? I->second->getName() : "NULL") << "\n";
+      errs() << "\tseen[%" << I->first->getName() << "] = %" << (I->second ? I->second->getName() : "nullptr") << "\n";
     }
   }
 
