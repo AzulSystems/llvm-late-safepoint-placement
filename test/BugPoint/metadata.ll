@@ -4,7 +4,7 @@
 
 ; Bugpoint should keep the call's metadata attached to the call.
 
-; CHECK: call void @foo(), !dbg ![[LOC:[0-9]+]], !attach ![[CALL:[0-9]+]]
+; CHECK: call void {{@foo|undef}}(), !dbg ![[LOC:[0-9]+]], !attach ![[CALL:[0-9]+]]
 ; CHECK: ![[LOC]] = metadata !{i32 104, i32 105, metadata ![[SCOPE:[0-9]+]], metadata ![[SCOPE]]}
 ; CHECK: ![[SCOPE]] = metadata !{i32 458769, metadata ![[FILE:[0-9]+]], i32 0, metadata !"me", i1 true, metadata !"", i32 0, metadata ![[LIST:[0-9]+]], metadata ![[LIST]], null, null, null, metadata !""}
 ; CHECK: ![[FILE]] = metadata !{metadata !"source.c", metadata !"/dir"}

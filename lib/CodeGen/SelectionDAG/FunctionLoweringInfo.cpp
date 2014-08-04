@@ -241,6 +241,7 @@ void FunctionLoweringInfo::clear() {
   ArgDbgValues.clear();
   ByValArgFrameIndexMap.clear();
   RegFixups.clear();
+  StatepointStackSlots.clear();
 }
 
 /// CreateReg - Allocate a single virtual register for the given type.

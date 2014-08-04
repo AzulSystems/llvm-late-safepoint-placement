@@ -39,6 +39,9 @@ using namespace llvm;
 #define DEBUG_TYPE "bugpoint"
 
 namespace llvm {
+  // Defined in ToolDriver.cpp
+  extern cl::opt<bool> SaveTemps;
+  
   extern cl::opt<std::string> OutputPrefix;
 }
 
@@ -219,14 +222,17 @@ bool BugDriver::runPasses(Module *Program,
                                    (SilencePasses ? Redirects : nullptr),
                                    Timeout, MemoryLimit, &ErrMsg);
 
-  // If we are supposed to delete the bitcode file or if the passes crashed,
-  // remove it now.  This may fail if the file was never created, but that's ok.
-  if (DeleteOutput || result != 0)
-    sys::fs::remove(OutputFilename);
-
-  // Remove the temporary input file as well
-  sys::fs::remove(InputFilename.c_str());
-
+  if (!SaveTemps) {
+    // If we are supposed to delete the bitcode file or if the passes crashed,
+    // remove it now.  This may fail if the file was never created, but that's
+    // ok.
+    if (DeleteOutput || result != 0)
+      sys::fs::remove(OutputFilename);
+    
+    // Remove the temporary input file as well
+    sys::fs::remove(InputFilename.c_str());
+  }
+  
   if (!Quiet) {
     if (result == 0)
       outs() << "Success!\n";

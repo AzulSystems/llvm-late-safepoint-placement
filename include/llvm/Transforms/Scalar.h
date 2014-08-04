@@ -17,12 +17,16 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <vector>
+
 namespace llvm {
 
+class ModulePass;
 class BasicBlockPass;
 class FunctionPass;
 class Pass;
 class GetElementPtrInst;
+class Instruction;
 class PassInfo;
 class TerminatorInst;
 class TargetLowering;
@@ -357,6 +361,18 @@ FunctionPass *createLowerExpectIntrinsicPass();
 // calls such as sqrt.
 //
 FunctionPass *createPartiallyInlineLibCallsPass();
+
+// Safepoint insertion
+ModulePass *createPlaceSafepointsPass();
+
+// Phantom argument removal
+ModulePass *createRemovePhantomArgPass();
+
+// VM state management
+FunctionPass *createRemoveFakeVMStateCallsPass();
+FunctionPass *createRemoveRedundantVMStatesPass();
+FunctionPass *createMergeNonDominatingVMStatesPass();
+FunctionPass *createMergeNonDominatingVMStatesPass(const std::vector<Instruction *> &);
 
 //===----------------------------------------------------------------------===//
 //
