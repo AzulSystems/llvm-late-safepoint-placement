@@ -1,2 +1,3 @@
 BasedOnStyle: LLVM
-
+ColumnLimit: 79
+AllowShortFunctionsOnASingleLine: None

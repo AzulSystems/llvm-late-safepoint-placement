@@ -26,6 +26,7 @@ add_llvm_library(LLVMScalarOpts
   Reassociate.cpp
   Reg2Mem.cpp
   RemoveRedundantVMStates.cpp
+  MergeNonDominatingVMStates.cpp
   SafepointPlacementPass.cpp
   SCCP.cpp
   SROA.cpp

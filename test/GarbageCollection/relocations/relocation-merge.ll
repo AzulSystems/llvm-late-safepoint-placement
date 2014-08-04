@@ -1,5 +1,4 @@
-; RUN: opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-all-functions -S -spp-reloc-via-alloca=0 2>&1 | FileCheck %s
-; RUN: opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-all-functions -S -spp-reloc-via-alloca=1 2>&1 | FileCheck --check-prefix CHECK-ALLOCA %s
+; RUN: opt %s -spp-no-entry -spp-no-backedge -place-safepoints -spp-all-functions -S 2>&1 | FileCheck %s
 
 %jObject = type { [8 x i8] }
 
@@ -31,13 +30,7 @@ join:
 ; CHECK: phi %jObject addrspace(1)*
 ; CHECK-DAG: [ %arg.relocated, %if_branch ]
 ; CHECK-DAG: [ %arg.relocated2, %else_branch ]
-; CHECK-DAG: !is_relocation_phi
 ; CHECK-NOT: phi
-; CHECK-ALLOCA-LABEL: join:
-; CHECK-ALLOCA: phi %jObject addrspace(1)*
-; CHECK-ALLOCA-DAG: [ %arg.relocated, %if_branch ]
-; CHECK-ALLOCA-DAG: [ %arg.relocated2, %else_branch ]
-; CHECK-ALLOCA-NOT: phi
 
   call void @"some_call"(%jObject addrspace(1)* %arg)
 ; CHECK: statepoint

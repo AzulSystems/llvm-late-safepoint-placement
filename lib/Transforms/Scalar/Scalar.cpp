@@ -68,6 +68,8 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializePlaceSafepointsPass(Registry);
   initializeRemoveFakeVMStateCallsPass(Registry);
   initializeRemoveRedundantVMStatesPass(Registry);
+  initializeRemovePhantomArgPass(Registry);
+  initializeMergeNonDominatingVMStatesPass(Registry);
   initializeSeparateConstOffsetFromGEPPass(Registry);
   initializeLoadCombinePass(Registry);
 }

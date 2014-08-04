@@ -1,5 +1,4 @@
-; RUN: opt %s -place-safepoints -spp-no-entry -spp-reloc-via-alloca=0 -spp-all-functions -S 2>&1 | FileCheck %s
-; RUN: opt %s -place-safepoints -spp-no-entry -spp-reloc-via-alloca=1 -spp-all-functions -S 2>&1 | FileCheck --check-prefix CHECK-ALLOCA %s
+; RUN: opt %s -place-safepoints -spp-no-entry -spp-all-functions -S 2>&1 | FileCheck %s
 
 ; Note: This test is specific to the implementation of the older
 ; style of relocation.  It is testing a corner case in the 
@@ -27,9 +26,7 @@ bci_0:
 not_zero625.us:                                   ; preds = %not_zero625.us, %bci_0
 ; is larger than the one here (backedge safepoint)
 ; we can insert a relocation phi here, but there can't be any uses of it
-; CHECK: %relocated = phi %jObject addrspace(1)* [ null, %not_zero625.us ], [ %arg1.relocated, %bci_0 ], !is_relocation_phi !0
-; CHECK-NOT: %relocated
-; CHECK-ALLOCA-NOT: phi %jObject addrspace(1)*
+; CHECK-NOT: phi %jObject addrspace(1)*
   br label %not_zero625.us
 }
 

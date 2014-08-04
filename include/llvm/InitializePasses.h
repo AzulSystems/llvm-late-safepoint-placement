@@ -278,8 +278,10 @@ void initializePlaceBackedgeSafepointsImplPass(PassRegistry&);
 void initializePlaceSafepointsPass(PassRegistry&);
 void initializeSafepointIRVerifierPass(PassRegistry&);
 void initializeSafepointMachineVerifierPass(PassRegistry&);
+void initializeRemovePhantomArgPass(PassRegistry&);
 void initializeRemoveFakeVMStateCallsPass(PassRegistry&);
 void initializeRemoveRedundantVMStatesPass(PassRegistry&);
+void initializeMergeNonDominatingVMStatesPass(PassRegistry&);
 void initializeStackMapLivenessPass(PassRegistry&);
 void initializeLoadCombinePass(PassRegistry&);
 }

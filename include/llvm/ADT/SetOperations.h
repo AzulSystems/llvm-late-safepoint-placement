@@ -21,14 +21,9 @@ namespace llvm {
 ///
 template <class S1Ty, class S2Ty>
 bool set_union(S1Ty &S1, const S2Ty &S2) {
-  bool Changed = false;
-
-  for (typename S2Ty::const_iterator SI = S2.begin(), SE = S2.end();
-       SI != SE; ++SI)
-    if (S1.insert(*SI).second)
-      Changed = true;
-
-  return Changed;
+  const typename S1Ty::size_type OldSize = S1.size();
+  S1.insert(S2.begin(), S2.end());
+  return S1.size() != OldSize;
 }
 
 /// set_intersect(A, B) - Compute A := A ^ B

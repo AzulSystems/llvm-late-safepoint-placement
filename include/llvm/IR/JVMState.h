@@ -51,8 +51,7 @@ class JVMStateBase {
 #ifndef NDEBUG
     assertJVMStateSanity(jvmState);
 #endif
-    jvmsCallerVMState = static_cast<int>(
-        cast<ConstantInt>(jvmState->getArgOperand(callerVMStateIndex))->getSExtValue());
+    jvmsCallerVMState = jvmState->getArgOperand(callerVMStateIndex);
     jvmsBCI = static_cast<int>(
         cast<ConstantInt>(jvmState->getArgOperand(bciIndex))->getSExtValue());
     jvmsNumStackElements = static_cast<int>(
@@ -71,7 +70,7 @@ class JVMStateBase {
 
   static int headerEndOffset() { return 5; }
 
-  int callerVMState() const { return jvmsCallerVMState; }
+  Value* callerVMState() const { return jvmsCallerVMState; }
   int bci() const { return jvmsBCI; }
   int numStackElements() const { return jvmsNumStackElements; }
   int numLocals() const { return jvmsNumLocals; }
@@ -110,7 +109,7 @@ class JVMStateBase {
 
  private:
   CallInstTy *jvmState;
-  int jvmsCallerVMState;
+  Value* jvmsCallerVMState;
   int jvmsBCI;
   int jvmsNumStackElements;
   int jvmsNumLocals;

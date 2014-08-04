@@ -16,7 +16,16 @@
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/StackMaps.h"
+#include "llvm/Support/CommandLine.h"
 using namespace llvm;
+
+/// This option is used for writting test cases.  Instead of
+/// crashing the program when verification fails, report a
+/// message to the console (for FileCheck usage) and continue
+/// execution as if nothing happened.
+static cl::opt<bool> PrintOnly(
+    "safepoint-machineInstr-verifier-print-only",
+    cl::init(false));
 
 namespace {
   class SafepointMachineVerifier : public MachineFunctionPass {
@@ -193,7 +202,13 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
           MachineBasicBlock* incomingBB = inst->getOperand(i+1).getMBB();
           // here we dont need to care about RelocationPHIEscapes like the IR verifer
           // because those unused relocation phis should be cleaned up by the optimizer
-          assert(state[incomingBB]._invalid.find(reg) == state[incomingBB]._invalid.end() && "use of invalid unrelocated machine value after safepoint!");
+          if (state[incomingBB]._invalid.find(reg) != state[incomingBB]._invalid.end()) {
+            errs() << "Illegal use of unrelocated machine value after safepoint found!\n";
+            errs() << "MachineInstr: ";
+            inst->dump();
+            if (!PrintOnly)
+              assert(0 && "use of invalid unrelocated machine value after safepoint!");
+          }
         }
       }
       assert(inst->getOperand(0).isReg() && inst->getOperand(0).isDef()
@@ -233,18 +248,28 @@ bool SafepointMachineVerifier::runOnMachineFunction(MachineFunction &MF) {
         // check whether any operand is invalid
         if (inst->getOpcode() != TargetOpcode::STATEPOINT) {
           for (unsigned i = 1; i < inst->getNumOperands(); i++) {
-            assert((!inst->getOperand(i).isReg() || !inst->getOperand(i).isUse()
-                || invalid.find(inst->getOperand(i).getReg()) == invalid.end())
-                && "use of invalid unrelocated value after safepoint!");
+            if (!(!inst->getOperand(i).isReg() || !inst->getOperand(i).isUse()
+                || invalid.find(inst->getOperand(i).getReg()) == invalid.end())) {
+              errs() << "Illegal use of unrelocated machine value after safepoint found!\n";
+              errs() << "MachineInstr: ";
+              inst->dump();
+              if (!PrintOnly)
+                assert(0 && "use of invalid unrelocated value after safepoint!");
+            }
           }
         } else {
           // only check call argument for statepoint because vmstate is not updated properly (a known bug)
           assert(inst->getOperand(0).isImm() && "number of call args must be immediate");
           int num_arg = inst->getOperand(0).getImm();
           for (int i = 2; i < 2 + num_arg; i++) {
-            assert((!inst->getOperand(i).isReg() || !inst->getOperand(i).isUse()
-                || invalid.find(inst->getOperand(i).getReg()) == invalid.end())
-                && "use of invalid unrelocated value after safepoint!");
+            if (!(!inst->getOperand(i).isReg() || !inst->getOperand(i).isUse()
+                || invalid.find(inst->getOperand(i).getReg()) == invalid.end())) {
+              errs() << "Illegal use of unrelocated machine value after safepoint found!\n";
+              errs() << "MachineInstr: ";
+              inst->dump();
+              if (!PrintOnly)
+                assert(0 && "use of invalid unrelocated value after safepoint!");
+            }
           }
         }
 

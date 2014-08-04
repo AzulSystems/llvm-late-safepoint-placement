@@ -2624,10 +2624,10 @@ void Verifier::visitIntrinsicFunctionCall(Intrinsic::ID ID, CallInst &CI) {
     GCRelocateOperands ops( &CI );
     // Check the bounds
     Assert1( 0 <= ops.basePtrIndex() &&
-             ops.basePtrIndex() < StatepointCS.arg_size(),
+             ops.basePtrIndex() < (int)StatepointCS.arg_size(),
              "index out of bounds", &CI);
     Assert1( 0 <= ops.derivedPtrIndex() &&
-             ops.derivedPtrIndex() < StatepointCS.arg_size(),
+             ops.derivedPtrIndex() < (int)StatepointCS.arg_size(),
              "index out of bounds", &CI);
 
     // Should only be relocating pointer types

@@ -1,4 +1,4 @@
-; RUN: opt %s -S -place-safepoints -spp-use-vm-state=false -spp-reloc-via-alloca | FileCheck %s
+; RUN: opt %s -S -place-safepoints -spp-use-vm-state=false | FileCheck %s
 
 define fastcc void @test(i8 addrspace(1)* %arg) #0 {
 entry:
